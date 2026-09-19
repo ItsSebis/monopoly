@@ -7,11 +7,16 @@ use crate::strategy::{patient_jail_action, JailAction, PurchaseOffer, Strategy};
 pub struct BuyNone;
 
 impl Strategy for BuyNone {
-    fn decide_purchase(&mut self, _view: &GameView, _offer: &PurchaseOffer) -> bool {
+    fn decide_purchase(
+        &mut self,
+        _view: &GameView,
+        _player: usize,
+        _offer: &PurchaseOffer,
+    ) -> bool {
         false
     }
 
-    fn decide_jail_action(&mut self, view: &GameView) -> JailAction {
-        patient_jail_action(view, view.state.current_player)
+    fn decide_jail_action(&mut self, view: &GameView, player: usize) -> JailAction {
+        patient_jail_action(view, player)
     }
 }

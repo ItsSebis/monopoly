@@ -10,9 +10,10 @@ pub struct PlayerState {
     pub cash: i64,
     pub position: usize,
     pub in_jail: bool,
-    /// Number of turns already spent failing to leave jail (0-2); at 2 the
-    /// player's next turn is a forced pay-and-exit, per the official 3-turn
-    /// cap.
+    /// Number of failed roll-for-doubles attempts so far this jail stay
+    /// (0-2). On the third attempt (`jail_turns == 2`), a failed roll forces
+    /// an immediate pay-and-move instead of another wait — the official
+    /// 3-turn cap.
     pub jail_turns: u8,
     pub bankrupt: bool,
 }
@@ -47,7 +48,10 @@ impl GameState {
         GameState {
             turn: 0,
             current_player: 0,
-            players: names.iter().map(|n| PlayerState::new(n.clone(), rules.starting_cash)).collect(),
+            players: names
+                .iter()
+                .map(|n| PlayerState::new(n.clone(), rules.starting_cash))
+                .collect(),
             owners: vec![None; BOARD_SIZE],
         }
     }
@@ -77,15 +81,23 @@ impl<'a> GameView<'a> {
     /// Whether `player` owns every street in `group` (the monopoly bonus
     /// applies to rent regardless of whether any houses have been built).
     pub fn owns_full_group(&self, player: usize, group: ColorGroup) -> bool {
-        self.board.group_members(group).all(|space| self.state.owners[space] == Some(player))
+        self.board
+            .group_members(group)
+            .all(|space| self.state.owners[space] == Some(player))
     }
 
     pub fn owned_railroad_count(&self, player: usize) -> usize {
-        RAILROAD_SPACES.iter().filter(|&&s| self.state.owners[s] == Some(player)).count()
+        RAILROAD_SPACES
+            .iter()
+            .filter(|&&s| self.state.owners[s] == Some(player))
+            .count()
     }
 
     pub fn owned_utility_count(&self, player: usize) -> usize {
-        UTILITY_SPACES.iter().filter(|&&s| self.state.owners[s] == Some(player)).count()
+        UTILITY_SPACES
+            .iter()
+            .filter(|&&s| self.state.owners[s] == Some(player))
+            .count()
     }
 
     /// Cash on hand plus the purchase price of every property owned

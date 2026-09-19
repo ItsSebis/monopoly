@@ -24,17 +24,29 @@ mod tests {
 
     #[test]
     fn flat_mode_ignores_net_worth() {
-        assert_eq!(income_tax_due(IncomeTaxMode::Flat { amount: 200 }, 5000), 200);
+        assert_eq!(
+            income_tax_due(IncomeTaxMode::Flat { amount: 200 }, 5000),
+            200
+        );
     }
 
     #[test]
     fn percentage_mode_scales_with_net_worth() {
-        assert_eq!(income_tax_due(IncomeTaxMode::Percentage { rate: 0.10 }, 3000), 300);
+        assert_eq!(
+            income_tax_due(IncomeTaxMode::Percentage { rate: 0.10 }, 3000),
+            300
+        );
     }
 
     #[test]
     fn choice_mode_picks_the_cheaper_option() {
-        assert_eq!(income_tax_due(IncomeTaxMode::Choice { flat_amount: 200 }, 1000), 100);
-        assert_eq!(income_tax_due(IncomeTaxMode::Choice { flat_amount: 200 }, 5000), 200);
+        assert_eq!(
+            income_tax_due(IncomeTaxMode::Choice { flat_amount: 200 }, 1000),
+            100
+        );
+        assert_eq!(
+            income_tax_due(IncomeTaxMode::Choice { flat_amount: 200 }, 5000),
+            200
+        );
     }
 }

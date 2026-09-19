@@ -11,12 +11,11 @@ const RESERVE: i64 = 20;
 pub struct BuyBad;
 
 impl Strategy for BuyBad {
-    fn decide_purchase(&mut self, view: &GameView, offer: &PurchaseOffer) -> bool {
-        let player = view.state.current_player;
+    fn decide_purchase(&mut self, view: &GameView, player: usize, offer: &PurchaseOffer) -> bool {
         view.player(player).cash - offer.price as i64 >= RESERVE
     }
 
-    fn decide_jail_action(&mut self, _view: &GameView) -> JailAction {
+    fn decide_jail_action(&mut self, _view: &GameView, _player: usize) -> JailAction {
         // Rolls for doubles even when it could afford to leave sooner.
         JailAction::RollForDoubles
     }

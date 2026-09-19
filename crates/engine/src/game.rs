@@ -38,29 +38,59 @@ pub struct GameResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnknownStrategy(pub String);
+pub enum ConfigError {
+    UnknownStrategy(String),
+    /// Monopoly needs at least 2 players; fewer is a config mistake, not a
+    /// degenerate-but-valid game (a 0- or 1-player game would trivially
+    /// "win" at turn 0 with no rolls ever made).
+    NotEnoughPlayers(usize),
+}
 
-impl std::fmt::Display for UnknownStrategy {
+impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unknown strategy id: {}", self.0)
+        match self {
+            ConfigError::UnknownStrategy(id) => write!(f, "unknown strategy id: {id}"),
+            ConfigError::NotEnoughPlayers(n) => write!(f, "need at least 2 players, got {n}"),
+        }
     }
 }
 
-impl std::error::Error for UnknownStrategy {}
+impl std::error::Error for ConfigError {}
 
 impl Game {
-    pub fn new(rules: RuleSet, players: &[PlayerConfig], seed: u64) -> Result<Self, UnknownStrategy> {
+    pub fn new(rules: RuleSet, players: &[PlayerConfig], seed: u64) -> Result<Self, ConfigError> {
+        if players.len() < 2 {
+            return Err(ConfigError::NotEnoughPlayers(players.len()));
+        }
         let names: Vec<String> = players.iter().map(|p| p.name.clone()).collect();
         let strategies = players
             .iter()
-            .map(|p| make_strategy(&p.strategy).ok_or_else(|| UnknownStrategy(p.strategy.clone())))
+            .map(|p| {
+                make_strategy(&p.strategy)
+                    .ok_or_else(|| ConfigError::UnknownStrategy(p.strategy.clone()))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let state = GameState::new(&rules, &names);
-        Ok(Game { board: Board::standard(), rules, state, strategies, rng: StdRng::seed_from_u64(seed), seq: 0, log: Vec::new() })
+        Ok(Game {
+            board: Board::standard(),
+            rules,
+            state,
+            strategies,
+            rng: StdRng::seed_from_u64(seed),
+            seq: 0,
+            log: Vec::new(),
+        })
     }
 
     pub fn is_over(&self) -> bool {
         self.state.active_player_count() <= 1
+    }
+
+    /// The current game state, for inspecting the board between `step_turn`
+    /// calls (e.g. Phase 5's live browser playback, which renders after
+    /// every turn rather than only at the end).
+    pub fn state(&self) -> &GameState {
+        &self.state
     }
 
     /// Runs turns until one player remains (or the internal safety cap is
@@ -73,18 +103,40 @@ impl Game {
             .then(|| self.state.players.iter().position(|p| !p.bankrupt))
             .flatten();
         let turns = self.state.turn;
-        let last_player = self.state.current_player;
-        self.record(last_player, Event::GameEnded { winner, turns });
-        GameResult { winner, turns, events: self.log.clone(), final_state: self.state.clone() }
+        // Attribute the closing event to the winner when there is one: if the
+        // game ended by the *current* player's own bankruptcy, `current_player`
+        // still points at that now-removed player (`finish_turn` stops
+        // advancing once `is_over()`), which would otherwise mislabel the
+        // final envelope.
+        let closing_player = winner.unwrap_or(self.state.current_player);
+        self.record(closing_player, Event::GameEnded { winner, turns });
+        // The log is moved out rather than cloned: it reaches ~65k envelopes
+        // (~3 MB) in a long game, and copying that once per game is pure
+        // overhead for a batch runner that only wants the finished log.
+        GameResult {
+            winner,
+            turns,
+            events: std::mem::take(&mut self.log),
+            final_state: self.state.clone(),
+        }
     }
 
     fn record(&mut self, player: usize, event: Event) {
         self.seq += 1;
-        self.log.push(EventEnvelope { turn: self.state.turn, player, seq: self.seq, event });
+        self.log.push(EventEnvelope {
+            turn: self.state.turn,
+            player,
+            seq: self.seq,
+            event,
+        });
     }
 
     fn view(&self) -> GameView<'_> {
-        GameView { board: &self.board, rules: &self.rules, state: &self.state }
+        GameView {
+            board: &self.board,
+            rules: &self.rules,
+            state: &self.state,
+        }
     }
 
     /// Advances the game by exactly one player's turn (which may itself
@@ -117,14 +169,21 @@ impl Game {
         let mut doubles_in_a_row = 0u8;
         loop {
             let dice = self.roll_dice(player);
-            doubles_in_a_row = if dice.0 == dice.1 { doubles_in_a_row + 1 } else { 0 };
+            doubles_in_a_row = if dice.0 == dice.1 {
+                doubles_in_a_row + 1
+            } else {
+                0
+            };
             if doubles_in_a_row == 3 {
                 self.send_to_jail(player, JailReason::ThreeDoubles);
                 break;
             }
             self.move_player(player, dice.0 + dice.1);
             self.resolve_landing(player, dice.0 + dice.1);
-            if self.state.players[player].bankrupt || self.state.players[player].in_jail || dice.0 != dice.1 {
+            if self.state.players[player].bankrupt
+                || self.state.players[player].in_jail
+                || dice.0 != dice.1
+            {
                 break;
             }
         }
@@ -184,6 +243,12 @@ impl Game {
     fn bankrupt_player(&mut self, player: usize) {
         self.state.players[player].cash = 0;
         self.state.players[player].bankrupt = true;
+        // A player bankrupted *while jailed* (e.g. by the forced fine on the
+        // last jail turn) is out of the game, so leaving `in_jail`/`jail_turns`
+        // set would leave the final state claiming a removed player is still
+        // serving a sentence.
+        self.state.players[player].in_jail = false;
+        self.state.players[player].jail_turns = 0;
         for owner in self.state.owners.iter_mut() {
             if *owner == Some(player) {
                 *owner = None;
@@ -205,36 +270,66 @@ impl Game {
         self.record(player, Event::JailExited);
     }
 
+    /// Pays the jail fine; returns false if that payment bankrupted the
+    /// player (in which case they're out of the game, not just out of jail).
+    fn pay_jail_fine(&mut self, player: usize) -> bool {
+        self.charge(player, self.rules.jail_fine, None);
+        !self.state.players[player].bankrupt
+    }
+
     /// Resolves the jail decision at the start of a jailed player's turn.
+    /// Official rules give a jailed player up to 3 turns to roll doubles; if
+    /// the third roll also fails, they must pay the fine immediately and
+    /// move using that same roll (see docs/game-rules.md's Jail section).
     /// Returns whether the player should go on to take a normal turn this
-    /// same call (true after paying the fine — they still need to roll and
-    /// move; false if they stayed in jail, went bankrupt, or already moved
-    /// via a successful escape roll, since an escape-by-doubles roll never
-    /// grants the usual "doubles = go again" bonus).
+    /// same call (true after voluntarily paying the fine — they still need
+    /// to roll and move; false in every case that already moved them this
+    /// call, since neither a successful escape roll nor the forced
+    /// third-attempt move grants the usual "doubles = go again" bonus).
     fn resolve_jail_start_of_turn(&mut self, player: usize) -> bool {
-        let forced = self.state.players[player].jail_turns >= 2;
         // Constructed inline (not via `self.view()`) so this only borrows
         // board/rules/state, leaving `self.strategies` free to borrow
         // mutably on the next line.
-        let view = GameView { board: &self.board, rules: &self.rules, state: &self.state };
-        let mut action = self.strategies[player].decide_jail_action(&view);
-        if forced {
-            action = JailAction::PayFine;
-        }
-        self.record(player, Event::JailDecision { action, forced });
+        let view = GameView {
+            board: &self.board,
+            rules: &self.rules,
+            state: &self.state,
+        };
+        let action = self.strategies[player].decide_jail_action(&view, player);
+        self.record(
+            player,
+            Event::JailDecision {
+                action,
+                forced: false,
+            },
+        );
 
         match action {
             JailAction::PayFine => {
-                self.charge(player, self.rules.jail_fine, None);
-                if self.state.players[player].bankrupt {
+                if !self.pay_jail_fine(player) {
                     return false;
                 }
                 self.exit_jail(player);
                 true
             }
             JailAction::RollForDoubles => {
+                let is_third_attempt = self.state.players[player].jail_turns >= 2;
                 let dice = self.roll_dice(player);
                 if dice.0 == dice.1 {
+                    self.exit_jail(player);
+                    self.move_player(player, dice.0 + dice.1);
+                    self.resolve_landing(player, dice.0 + dice.1);
+                } else if is_third_attempt {
+                    self.record(
+                        player,
+                        Event::JailDecision {
+                            action: JailAction::PayFine,
+                            forced: true,
+                        },
+                    );
+                    if !self.pay_jail_fine(player) {
+                        return false;
+                    }
                     self.exit_jail(player);
                     self.move_player(player, dice.0 + dice.1);
                     self.resolve_landing(player, dice.0 + dice.1);
@@ -255,16 +350,24 @@ impl Game {
             SpaceKind::IncomeTax => {
                 let amount = self.income_tax_due(player);
                 self.charge(player, amount, None);
-                if !self.state.players[player].bankrupt {
-                    self.record(player, Event::TaxPaid { amount, kind: TaxKind::Income });
-                }
+                self.record(
+                    player,
+                    Event::TaxPaid {
+                        amount,
+                        kind: TaxKind::Income,
+                    },
+                );
             }
             SpaceKind::LuxuryTax => {
                 let amount = self.rules.luxury_tax;
                 self.charge(player, amount, None);
-                if !self.state.players[player].bankrupt {
-                    self.record(player, Event::TaxPaid { amount, kind: TaxKind::Luxury });
-                }
+                self.record(
+                    player,
+                    Event::TaxPaid {
+                        amount,
+                        kind: TaxKind::Luxury,
+                    },
+                );
             }
             SpaceKind::GoToJail => self.send_to_jail(player, JailReason::GoToJailSpace),
             // No effect yet: Free Parking has no pot in the baseline rules,
@@ -283,10 +386,22 @@ impl Game {
     fn resolve_ownable_landing(&mut self, player: usize, space: usize, dice_total: u8) {
         match self.state.owners[space] {
             None => {
-                let price = self.board.space(space).price().expect("ownable space has a price");
+                let price = self
+                    .board
+                    .space(space)
+                    .price()
+                    .expect("ownable space has a price");
                 self.record(player, Event::PropertyOffered { space, price });
-                let view = GameView { board: &self.board, rules: &self.rules, state: &self.state };
-                let wants_to_buy = self.strategies[player].decide_purchase(&view, &PurchaseOffer { space, price });
+                let view = GameView {
+                    board: &self.board,
+                    rules: &self.rules,
+                    state: &self.state,
+                };
+                let wants_to_buy = self.strategies[player].decide_purchase(
+                    &view,
+                    player,
+                    &PurchaseOffer { space, price },
+                );
                 let bought = wants_to_buy && self.state.players[player].cash >= price as i64;
                 if bought {
                     self.state.players[player].cash -= price as i64;
@@ -297,9 +412,14 @@ impl Game {
             Some(owner) if owner != player => {
                 let amount = self.rent_due(space, owner, dice_total);
                 self.charge(player, amount, Some(owner));
-                if !self.state.players[player].bankrupt {
-                    self.record(player, Event::RentPaid { to: owner, amount, space });
-                }
+                self.record(
+                    player,
+                    Event::RentPaid {
+                        to: owner,
+                        amount,
+                        space,
+                    },
+                );
             }
             Some(_) => {}
         }
@@ -308,11 +428,15 @@ impl Game {
     fn rent_due(&self, space: usize, owner: usize, dice_total: u8) -> u32 {
         let view = self.view();
         match self.board.space(space) {
-            SpaceKind::Street { group, base_rent, .. } => {
-                crate::rent::street_rent(base_rent, view.owns_full_group(owner, group))
+            SpaceKind::Street {
+                group, base_rent, ..
+            } => crate::rent::street_rent(base_rent, view.owns_full_group(owner, group)),
+            SpaceKind::Railroad { .. } => {
+                crate::rent::railroad_rent(view.owned_railroad_count(owner))
             }
-            SpaceKind::Railroad { .. } => crate::rent::railroad_rent(view.owned_railroad_count(owner)),
-            SpaceKind::Utility { .. } => crate::rent::utility_rent(view.owned_utility_count(owner), dice_total),
+            SpaceKind::Utility { .. } => {
+                crate::rent::utility_rent(view.owned_utility_count(owner), dice_total)
+            }
             _ => unreachable!("rent is only charged on ownable spaces"),
         }
     }
@@ -329,8 +453,14 @@ mod tests {
 
     fn two_players() -> Vec<PlayerConfig> {
         vec![
-            PlayerConfig { name: "A".into(), strategy: "buy_good".into() },
-            PlayerConfig { name: "B".into(), strategy: "buy_good".into() },
+            PlayerConfig {
+                name: "A".into(),
+                strategy: "buy_good".into(),
+            },
+            PlayerConfig {
+                name: "B".into(),
+                strategy: "buy_good".into(),
+            },
         ]
     }
 
@@ -341,14 +471,26 @@ mod tests {
             let mut game = Game::new(RuleSet::default(), &players, seed).unwrap();
             let (doubles_rolled, moves_made) = {
                 let events = game.step_turn();
-                let doubles = events.iter().filter(|e| matches!(e.event, Event::RollDice { dice } if dice.0 == dice.1)).count();
-                let moves = events.iter().filter(|e| matches!(e.event, Event::Move { .. })).count();
+                let doubles = events
+                    .iter()
+                    .filter(|e| matches!(e.event, Event::RollDice { dice } if dice.0 == dice.1))
+                    .count();
+                let moves = events
+                    .iter()
+                    .filter(|e| matches!(e.event, Event::Move { .. }))
+                    .count();
                 (doubles, moves)
             };
             if doubles_rolled == 3 {
-                assert!(game.state.players[0].in_jail, "seed {seed}: three doubles should send the player to jail");
+                assert!(
+                    game.state.players[0].in_jail,
+                    "seed {seed}: three doubles should send the player to jail"
+                );
                 assert_eq!(game.state.players[0].position, JAIL_SPACE);
-                assert_eq!(moves_made, 2, "seed {seed}: the third (jailing) double must not move the player");
+                assert_eq!(
+                    moves_made, 2,
+                    "seed {seed}: the third (jailing) double must not move the player"
+                );
                 return;
             }
         }
@@ -365,7 +507,10 @@ mod tests {
 
         assert!(game.state.players[0].bankrupt);
         assert_eq!(game.state.players[0].cash, 0);
-        assert_eq!(game.state.owners[1], None, "bankrupt player's properties return to the unowned pool");
+        assert_eq!(
+            game.state.owners[1], None,
+            "bankrupt player's properties return to the unowned pool"
+        );
     }
 
     #[test]
@@ -386,16 +531,25 @@ mod tests {
         game.state.players[0].position = 38;
         game.move_player(0, 4); // 38 -> 2, passes GO
         assert_eq!(game.state.players[0].position, 2);
-        assert_eq!(game.state.players[0].cash, starting_cash + game.rules.go_salary as i64);
+        assert_eq!(
+            game.state.players[0].cash,
+            starting_cash + game.rules.go_salary as i64
+        );
 
         let after_pass = game.state.players[0].cash;
         game.state.players[0].position = 35;
         game.move_player(0, 5); // 35 -> 0, lands exactly on GO
         assert_eq!(game.state.players[0].position, 0);
-        assert_eq!(game.state.players[0].cash, after_pass + game.rules.go_salary as i64);
+        assert_eq!(
+            game.state.players[0].cash,
+            after_pass + game.rules.go_salary as i64
+        );
 
         let after_land = game.state.players[0].cash;
         game.move_player(0, 3); // 0 -> 3, no wrap
-        assert_eq!(game.state.players[0].cash, after_land, "no salary without passing/landing on GO");
+        assert_eq!(
+            game.state.players[0].cash, after_land,
+            "no salary without passing/landing on GO"
+        );
     }
 }

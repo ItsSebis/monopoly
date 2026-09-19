@@ -49,12 +49,20 @@ fn run(config_path: &Path, seed: Option<u64>, out: Option<&Path>) -> ExitCode {
 
     match out {
         Some(path) => {
-            let output = OutputFile { seed, result: &result };
-            let json = serde_json::to_string_pretty(&output).expect("GameResult is always serializable");
+            let output = OutputFile {
+                seed,
+                result: &result,
+            };
+            let json =
+                serde_json::to_string_pretty(&output).expect("GameResult is always serializable");
             if let Err(e) = fs::write(path, json) {
                 return fail(&format!("writing {}: {e}", path.display()));
             }
-            println!("seed {seed}: wrote {} events to {}", result.events.len(), path.display());
+            println!(
+                "seed {seed}: wrote {} events to {}",
+                result.events.len(),
+                path.display()
+            );
         }
         None => print_summary(seed, &config.players, &result),
     }
@@ -92,7 +100,15 @@ fn print_summary(seed: u64, players: &[PlayerConfig], result: &GameResult) {
     }
     println!("events: {}", result.events.len());
     for (i, player) in result.final_state.players.iter().enumerate() {
-        let properties = result.final_state.owners.iter().filter(|o| **o == Some(i)).count();
-        println!("  {}: cash={} bankrupt={} properties={properties}", player.name, player.cash, player.bankrupt);
+        let properties = result
+            .final_state
+            .owners
+            .iter()
+            .filter(|o| **o == Some(i))
+            .count();
+        println!(
+            "  {}: cash={} bankrupt={} properties={properties}",
+            player.name, player.cash, player.bankrupt
+        );
     }
 }

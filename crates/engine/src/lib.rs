@@ -14,6 +14,6 @@ pub mod tax;
 
 pub use config::{GameConfig, PlayerConfig};
 pub use events::{Event, EventEnvelope};
-pub use game::{Game, GameResult, UnknownStrategy};
+pub use game::{ConfigError, Game, GameResult};
 pub use rules::{IncomeTaxMode, RuleSet};
 pub use strategy::{JailAction, PurchaseOffer, Strategy};

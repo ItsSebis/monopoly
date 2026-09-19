@@ -1,0 +1,163 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  --p0: #e6194b;
+  --p1: #3cb44b;
+  --p2: #4363d8;
+  --p3: #f58231;
+  --p4: #911eb4;
+  --p5: #46f0f0;
+  --p6: #f032e6;
+  --p7: #bcf60c;
+}
+
+body {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+  margin-bottom: 1rem;
+}
+
+fieldset label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.9rem;
+}
+
+.player-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+
+#config-error {
+  color: #c0392b;
+  min-height: 1.2em;
+}
+
+#playback-controls {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+#game-layout {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+#board {
+  display: grid;
+  grid-template-columns: repeat(11, minmax(50px, 1fr));
+  grid-template-rows: repeat(11, minmax(50px, 1fr));
+  gap: 2px;
+  width: min(70vw, 700px);
+  aspect-ratio: 1;
+  flex-shrink: 0;
+}
+
+.space {
+  border: 1px solid #8883;
+  font-size: 0.6rem;
+  padding: 2px;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.space .color-bar {
+  height: 6px;
+  margin: -2px -2px 2px -2px;
+}
+
+.space .name {
+  font-weight: 600;
+  line-height: 1.05;
+}
+
+.space .tokens {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: flex;
+  gap: 1px;
+  flex-wrap: wrap;
+}
+
+.token {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid #0006;
+}
+
+.space .houses {
+  font-size: 0.6rem;
+}
+
+.space.owned-0 { background: color-mix(in srgb, var(--p0) 25%, transparent); }
+.space.owned-1 { background: color-mix(in srgb, var(--p1) 25%, transparent); }
+.space.owned-2 { background: color-mix(in srgb, var(--p2) 25%, transparent); }
+.space.owned-3 { background: color-mix(in srgb, var(--p3) 25%, transparent); }
+.space.owned-4 { background: color-mix(in srgb, var(--p4) 25%, transparent); }
+.space.owned-5 { background: color-mix(in srgb, var(--p5) 25%, transparent); }
+.space.owned-6 { background: color-mix(in srgb, var(--p6) 25%, transparent); }
+.space.owned-7 { background: color-mix(in srgb, var(--p7) 25%, transparent); }
+.space.mortgaged { opacity: 0.5; }
+
+#side-panel {
+  flex: 1;
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+#player-panel .player {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid #8883;
+}
+
+#player-panel .player.current {
+  font-weight: bold;
+}
+
+#player-panel .player.bankrupt {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+#event-log {
+  height: 300px;
+  overflow-y: auto;
+  border: 1px solid #8883;
+  padding: 0.5rem;
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column-reverse;
+}
+
+#event-log p {
+  margin: 0.15rem 0;
+}
+
+#game-over-banner {
+  font-size: 1.2rem;
+  font-weight: bold;
+  padding: 0.5rem;
+}

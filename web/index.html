@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Monopoly</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <h1>Monopoly</h1>
+
+    <section id="config-panel">
+      <h2>New game</h2>
+      <form id="config-form">
+        <fieldset>
+          <legend>Rules</legend>
+          <label>Starting cash <input type="number" name="starting_cash" value="1500" min="0" required /></label>
+          <label>GO salary <input type="number" name="go_salary" value="200" min="0" required /></label>
+          <label>Jail fine <input type="number" name="jail_fine" value="50" min="0" required /></label>
+          <label>Luxury tax <input type="number" name="luxury_tax" value="75" min="0" required /></label>
+          <label>
+            Income tax mode
+            <select name="income_tax_mode">
+              <option value="choice" selected>Choice (cheaper of flat/10%)</option>
+              <option value="flat">Flat</option>
+              <option value="percentage">Percentage</option>
+            </select>
+          </label>
+          <label>Flat/choice tax amount <input type="number" name="income_tax_flat_amount" value="200" min="0" /></label>
+          <label>Percentage tax rate (e.g. 0.1 = 10%) <input type="number" name="income_tax_rate" value="0.1" min="0" max="1" step="0.01" /></label>
+          <label><input type="checkbox" name="even_build_rule" checked /> Even build rule</label>
+          <label><input type="checkbox" name="auction_on_decline" checked /> Auction on decline</label>
+          <label><input type="checkbox" name="free_parking_pot" /> Free parking pot</label>
+          <label>Max turns (optional) <input type="number" name="max_turns" min="1" placeholder="unbounded" /></label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Players</legend>
+          <div id="player-rows"></div>
+          <button type="button" id="add-player" disabled>Add player</button>
+        </fieldset>
+
+        <label>Seed (optional) <input type="number" name="seed" placeholder="random" /></label>
+
+        <button type="submit" id="start-button" disabled>Start</button>
+        <span id="loading-note">loading engine…</span>
+        <p id="config-error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="game-panel" hidden>
+      <div id="playback-controls">
+        <button type="button" id="play-pause-button">Pause</button>
+        <button type="button" id="step-button">Step</button>
+        <label>
+          Speed
+          <select id="speed-select">
+            <option value="1">1x</option>
+            <option value="4" selected>4x</option>
+            <option value="32">32x</option>
+            <option value="0">Instant</option>
+          </select>
+        </label>
+        <span id="turn-indicator"></span>
+        <button type="button" id="new-game-button">New game</button>
+      </div>
+
+      <div id="game-layout">
+        <div id="board"></div>
+        <div id="side-panel">
+          <div id="player-panel"></div>
+          <div id="event-log" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <p id="game-over-banner" hidden></p>
+    </section>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

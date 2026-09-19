@@ -309,13 +309,22 @@ fn a_bankruptcy_part_way_through_pay_each_player_still_pays_the_earlier_players(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    // Higher than the other invariants below: the bug this caught during
+    // Phase 3 review (a bankruptcy partway through PayEachPlayer/
+    // CollectFromEachPlayer silently voiding an earlier, already-successful
+    // payment) only manifests with 3+ players, that specific card drawn, and
+    // a bankruptcy on a non-first recipient — measured at roughly 1 in 600
+    // games, so a low case count gives a low chance of ever exercising it.
+    // Games are cheap here (max_turns caps every one), so this can afford to
+    // be generous.
+    #![proptest_config(ProptestConfig::with_cases(2000))]
 
-    /// The shape of bug Phase 2's review caught (bankruptcy silently
-    /// destroying a debtor's remaining cash instead of handing it to the
-    /// creditor), codified as a standing invariant: independently replaying
-    /// every cash-affecting event must land on exactly the engine's own
-    /// final cash for every player.
+    /// Codifies both the Phase 2 bankruptcy-cash-loss bug and the Phase 3
+    /// bankruptcy-mid-multi-payment bug (see `a_bankruptcy_part_way_through_
+    /// pay_each_player_still_pays_the_earlier_players` below for the pinned
+    /// regression) as a standing invariant: independently replaying every
+    /// cash-affecting event must land on exactly the engine's own final cash
+    /// for every player.
     #[test]
     fn cash_reconciles_against_the_full_event_log(
         rules in rule_set(),
@@ -330,6 +339,10 @@ proptest! {
             prop_assert_eq!(reconciled[i], player.cash, "player {}", i);
         }
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
 
     #[test]
     fn bank_house_and_hotel_supply_always_balances(

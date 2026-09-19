@@ -3,6 +3,11 @@ starting_cash = 1500
 go_salary = 200
 jail_fine = 50
 luxury_tax = 75
+# Bounds worst-case game length (Phase 3) so a `monopoly batch` run over
+# this config finishes quickly even though this strategy mix often doesn't
+# terminate on its own without trading — see docs/game-rules.md's
+# Bankruptcy section.
+max_turns = 1000
 
 [rules.income_tax_mode]
 mode = "choice"

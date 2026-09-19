@@ -97,3 +97,5 @@ The archived shape (server + `docs/api.md`). Deliberately different for single v
 ```
 
 Any individual game inside a batch run can be re-expanded to its full event log on demand by re-running the engine with `(rule_set, players, seed)` — the server does this lazily when the UI asks to inspect one specific game from a batch (see [api.md](./api.md#get-runsidgamesseed)).
+
+**As of Phase 3** (pre-Phase-4, no server yet), `monopoly run --out`/`monopoly batch --out` write the core of this shape directly, without the archive envelope (no `id`/`kind`/`created_at` — those are added when Phase 4's server actually archives a run): `{seed, winner, turns, events, final_state, final_stats}` for a single run, `{base_seed, per_game, aggregate}` for a batch (`per_game`/`aggregate` here are what this doc calls `per_game_summary`/`aggregate_stats` — Phase 4 settles the exact archived field names when it defines the wire format for real).

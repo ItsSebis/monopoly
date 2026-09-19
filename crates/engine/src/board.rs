@@ -22,7 +22,7 @@ const GROUP_MEMBERS: [&[usize]; 8] = [
     &[37, 39],
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum ColorGroup {
     Brown,
     LightBlue,

@@ -17,10 +17,7 @@ fn default_true() -> bool {
     true
 }
 
-/// The full `RuleSet` from `docs/data-model.md`, as of Phase 2: mortgaging
-/// and card decks (Phase 2) added `even_build_rule`, `auction_on_decline`,
-/// and `free_parking_pot`. `max_turns` stays deferred to Phase 3's batch
-/// runner, which is what actually needs a configurable turn cap.
+/// The full `RuleSet` from `docs/data-model.md`, as of Phase 3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleSet {
     pub starting_cash: u32,
@@ -40,6 +37,11 @@ pub struct RuleSet {
     /// Parking collects (a common house rule; off matches official rules).
     #[serde(default)]
     pub free_parking_pot: bool,
+    /// Optional cap on game length, mainly so a batch run (`docs/roadmap.md`
+    /// Phase 3) can bound its own worst-case cost. Unset, a single game still
+    /// falls back to the engine's internal safety valve.
+    #[serde(default)]
+    pub max_turns: Option<u32>,
 }
 
 impl Default for RuleSet {
@@ -53,6 +55,7 @@ impl Default for RuleSet {
             even_build_rule: true,
             auction_on_decline: true,
             free_parking_pot: false,
+            max_turns: None,
         }
     }
 }

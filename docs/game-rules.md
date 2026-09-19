@@ -10,7 +10,7 @@ Standard 40-space board:
 - **22 street properties** in 8 color groups (2–3 per group), each with a purchase price, a base rent, rent-with-monopoly (double base), and rent per house/hotel level (1–4 houses, then hotel).
 - **4 railroads** — rent depends on how many of the 4 the same owner holds ($25/$50/$100/$200 for 1/2/3/4 owned).
 - **2 utilities** (Electric Company, Water Works) — rent is a dice-roll multiplier: 4× the dice roll if the owner holds one utility, 10× if both.
-- **3 Chance spaces**, **3 Community Chest spaces** — draw the top card of the respective deck, apply its effect, then return it to the bottom (decks are shuffled once per game using the game's RNG seed).
+- **3 Chance spaces**, **3 Community Chest spaces** — draw the top card of the respective deck, apply its effect, then return it to the bottom (decks are shuffled once per game using the game's RNG seed). Both decks are the classic 16-card US-edition set; cards with an identical mechanical effect (many are just "collect/pay a flat amount" with different flavor text) share one effect type — see [simulation-engine.md](./simulation-engine.md#cards).
 - **Income Tax** (space 4) — pay a tax on landing (see [Income tax](#income-tax) below for the configurable mode).
 - **Luxury Tax** (space 38) — flat $75 (or configured value) on landing.
 - **Jail / Just Visiting** (space 10) — visiting has no effect; see [Jail](#jail) for arriving *in* jail.
@@ -36,22 +36,22 @@ Standard 40-space board:
 ## Jail
 
 - **Entering jail**: landing on "Go To Jail", drawing a "Go to Jail" card, or rolling doubles three times in one turn. Entering jail always ends movement for that turn immediately.
-- **Leaving jail**, tried in this order once a player's turn begins in jail: (a) play a "Get Out of Jail Free" card if held, (b) pay the jail fine (default $50, configurable) if the strategy chooses to, (c) roll for doubles — success releases the player and uses that roll to move; failure keeps them jailed and ends the turn. A player gets up to 3 turns to roll doubles; if the third roll also fails, they must pay the fine immediately and move using that same roll — this cap is part of the fixed baseline, not a toggle.
-- The choice between (a)/(b)/(c) when multiple are available is a strategy decision (`Strategy::decide_jail_action`).
+- **Leaving jail**, tried in this order once a player's turn begins in jail: (a) a held "Get Out of Jail Free" card is always played automatically — it's never worse than the alternatives, so this isn't a `Strategy` decision at all; (b) otherwise, pay the jail fine (default $50, configurable) if the strategy chooses to, or (c) roll for doubles — success releases the player and uses that roll to move; failure keeps them jailed and ends the turn. A player gets up to 3 turns to roll doubles; if the third roll also fails, they must pay the fine immediately and move using that same roll — this cap is part of the fixed baseline, not a toggle.
+- The choice between (b)/(c) is a strategy decision (`Strategy::decide_jail_action`), only asked when no card is held.
 
 ## Building houses and hotels
 
 - A player must own every property in a color group (a monopoly) before building on any property in that group.
 - **Even-build rule** (toggle, default on): within a group, no property may have more than one more house than the least-built property in that group — houses must be built up evenly across the group.
 - The bank has a finite supply: 32 houses and 12 hotels (fixed baseline, not configurable — this scarcity is part of what makes real Monopoly strategy interesting). A hotel replacement returns that property's 4 houses to the bank supply.
-- Building/selling houses is a strategy decision (`Strategy::decide_build`), evaluated once per turn per eligible group after the player's own landing resolution completes (mirroring how real play typically happens between/around turns).
+- Building/selling houses is a strategy decision (`Strategy::decide_build`), called once at the end of the player's own turn (after all their movement/landing resolution for that turn), returning a batch of actions across any number of their monopolies at once — mirroring how real play typically happens between/around turns, as a single "building phase" rather than a separate decision per group.
 
 ## Mortgaging
 
 - A property can be mortgaged for half its purchase price when the owner needs cash; a mortgaged property earns no rent from opponents landing on it.
-- Unmortgaging costs the mortgage value plus 10% interest.
+- Unmortgaging costs the mortgage value plus 10% interest. **Not modeled**: no built-in strategy ever chooses to unmortgage (see [player-strategies.md](./player-strategies.md)) — a mortgaged property stays mortgaged for the rest of the game. Voluntary unmortgaging is a candidate for a later phase, not a Phase 2 gap in fidelity for how these strategies actually play.
 - Buildings must be sold before mortgaging a property in a built-up group.
-- Mortgage/unmortgage decisions are made by `Strategy::decide_mortgage`, checked whenever a player owes a payment it cannot otherwise cover.
+- Mortgaging (and selling houses to raise cash) is a strategy decision (`Strategy::decide_mortgage`), asked whenever a player owes a payment it cannot otherwise cover.
 
 ## Bankruptcy
 
@@ -59,7 +59,7 @@ Standard 40-space board:
 - Bankrupt **to another player** (e.g. unpayable rent): all remaining properties transfer to the creditor, along with any "Get Out of Jail Free" cards, at their current mortgage state.
 - Bankrupt **to the bank** (e.g. unpayable tax): all properties return to the bank and become available for purchase/auction again.
 - The bankrupt player is removed from the game; if only one player remains, that player wins.
-- **Without houses** (Phase 1's scope), base rents are small enough relative to GO salary that two cash-accumulating strategies can occasionally out-earn each other indefinitely, with no bankruptcy ever occurring — confirmed empirically during Phase 1 implementation. This is expected, not a bug: house-building (Phase 2) multiplies rent far past salary income, which is what makes bankruptcy reliable in the real game.
+- **Before Phase 2 added houses**, base rents were small enough relative to GO salary that two cash-accumulating strategies could occasionally out-earn each other indefinitely, with no bankruptcy ever occurring — confirmed empirically during Phase 1. House-building rent (up to $2000 on Boardwalk with a hotel, vs. a $200 GO salary) is what makes bankruptcy reliable now; a stalemate between two strategies that never complete a monopoly (bad luck in the initial ownership split, since Phase 2 still has no trading — see [Trading](#trading)) remains possible but is far rarer.
 
 ## Income tax
 
@@ -80,7 +80,7 @@ Configurable (`RuleSet.free_parking_pot`):
 
 Configurable (`RuleSet.auction_on_decline`, default on, matching official rules):
 
-- When a player declines to buy an unowned property they landed on, it goes to auction among all players (including the one who declined). Bidding starts at $1 with no upper limit tied to list price. Each strategy participates via `Strategy::decide_auction_bid` (see [player-strategies.md](./player-strategies.md)); a strategy may bid $0 to abstain. Highest bidder pays the bank and takes the property. If everyone abstains, the property remains unowned.
+- When a player declines to buy an unowned property they landed on (including via a card that advances onto one), it goes to auction among all non-bankrupt players (including the one who declined). Auctions are a single **sealed-bid** round rather than live ascending bidding: every player calls `Strategy::decide_auction_bid` once, with no visibility into anyone else's bid (see [player-strategies.md](./player-strategies.md)); a strategy may bid nothing to abstain. The highest bid wins, paying the *second*-highest bid (or $1 with only one bidder) — approximating how a live auction actually settles (bidding stops just past the runner-up's ceiling) without simulating rounds. If everyone abstains, the property remains unowned.
 - When disabled, a declined property simply stays unowned and available for a future landing to trigger a fresh purchase offer.
 
 ## Trading

@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+use crate::cards::{CardEffect, DeckKind};
 use crate::strategy::JailAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -12,6 +13,7 @@ pub enum TaxKind {
 pub enum JailReason {
     GoToJailSpace,
     ThreeDoubles,
+    Card,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,9 +36,8 @@ pub enum Event {
         bought: bool,
     },
     /// `amount` is what was owed. If this player's very next event is
-    /// `Bankrupted`, the amount was never actually collected — Phase 1
-    /// treats every bankruptcy as bankruptcy-to-bank (see docs/roadmap.md),
-    /// so `to`/the tax payee never receives a partial payment either.
+    /// `Bankrupted`, the amount was never actually collected in full — see
+    /// `Bankrupted`'s `payee` for where whatever they *could* raise went.
     RentPaid {
         to: usize,
         amount: u32,
@@ -57,7 +58,44 @@ pub enum Event {
         forced: bool,
     },
     JailExited,
-    Bankrupted,
+    /// A drawn "Get Out of Jail Free" card is used automatically, not via a
+    /// `JailDecision` — see `Strategy`'s doc comment for why.
+    UsedGetOutOfJailFreeCard,
+    HouseBuilt {
+        space: usize,
+    },
+    HouseSold {
+        space: usize,
+    },
+    /// Mortgaging is a one-way action in Phase 2 — no strategy hook ever
+    /// chooses to unmortgage (see docs/player-strategies.md), so there's no
+    /// corresponding `Unmortgaged` event yet.
+    Mortgaged {
+        space: usize,
+    },
+    CardDrawn {
+        deck: DeckKind,
+        effect: CardEffect,
+    },
+    AuctionBid {
+        player: usize,
+        amount: Option<u32>,
+    },
+    /// `amount` is what the winner actually paid (the second-highest bid, or
+    /// $1 with only one bidder — see docs/roadmap.md's Phase 2 auction
+    /// design note), not necessarily their own bid.
+    AuctionWon {
+        player: usize,
+        space: usize,
+        amount: u32,
+    },
+    /// `payee`: `Some` for bankruptcy-to-player (who received the remaining
+    /// properties and any "Get Out of Jail Free" cards), `None` for
+    /// bankruptcy-to-bank (properties return to the unowned pool, cards
+    /// return to their decks).
+    Bankrupted {
+        payee: Option<usize>,
+    },
     GameEnded {
         winner: Option<usize>,
         turns: u32,

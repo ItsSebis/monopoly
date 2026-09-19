@@ -40,14 +40,14 @@ Core event types (see [data-model.md](./data-model.md#event-log-entry) for the e
 | `PassGo` | A player passes or lands on GO and collects salary |
 | `PropertyOffered` | A player lands on an unowned property |
 | `PurchaseDecision` | A strategy accepts or declines a purchase offer |
-| `AuctionStarted` / `AuctionBid` / `AuctionWon` | Auction flow, if enabled |
+| `AuctionBid` / `AuctionWon` | Each player's sealed bid, then the settled sale — see [game-rules.md](./game-rules.md#auctions) |
 | `RentPaid` | Rent changes hands |
 | `TaxPaid` | Income or luxury tax paid |
 | `CardDrawn` | A Chance/Community Chest card is drawn, with its effect |
-| `JailEntered` / `JailDecision` / `JailExited` | Jail flow |
+| `JailEntered` / `JailDecision` / `JailExited` / `UsedGetOutOfJailFreeCard` | Jail flow |
 | `HouseBuilt` / `HouseSold` | Building changes |
-| `Mortgaged` / `Unmortgaged` | Mortgage state changes |
-| `Bankrupted` | A player goes bankrupt, and to whom (player or bank) |
+| `Mortgaged` | A property is mortgaged (one-way in Phase 2 — see [game-rules.md](./game-rules.md#mortgaging)) |
+| `Bankrupted` | A player goes bankrupt, and to whom (a player, or the bank if `None`) |
 | `GameEnded` | One player remains; includes the winner and final standings |
 
 ## The `Strategy` trait
@@ -56,16 +56,22 @@ A `Strategy` is asked to make every decision a human player would normally make.
 
 ```rust
 pub trait Strategy {
-    fn decide_purchase(&mut self, view: &GameView, offer: &PurchaseOffer) -> bool;
-    fn decide_jail_action(&mut self, view: &GameView) -> JailAction; // PayFine | UseCard | RollForDoubles
-    fn decide_build(&mut self, view: &GameView) -> Vec<BuildAction>; // build/sell house(s) this turn
-    fn decide_mortgage(&mut self, view: &GameView, shortfall: Money) -> Vec<MortgageAction>;
-    fn decide_auction_bid(&mut self, view: &GameView, auction: &AuctionState) -> Bid; // includes "abstain"
-    // Phase 7: fn decide_trade(&mut self, view: &GameView) -> Option<TradeOffer>;
+    fn decide_purchase(&mut self, view: &GameView, player: usize, offer: &PurchaseOffer) -> bool;
+    fn decide_jail_action(&mut self, view: &GameView, player: usize) -> JailAction; // PayFine | RollForDoubles
+    fn decide_build(&mut self, view: &GameView, player: usize) -> Vec<BuildAction>; // build/sell house(s), once per turn
+    fn decide_mortgage(&mut self, view: &GameView, player: usize, shortfall: u32) -> Vec<MortgageAction>; // mortgage and/or sell houses
+    fn decide_auction_bid(&mut self, view: &GameView, player: usize, space: usize) -> Option<u32>; // None/0 = abstain
+    // Phase 7: fn decide_trade(&mut self, view: &GameView, player: usize) -> Option<TradeOffer>;
 }
 ```
 
+`player` is passed explicitly to every hook rather than read off `view.state.current_player` — `decide_auction_bid` asks every player, not just the current one, so that shortcut doesn't hold in general. There's no `UseCard` variant on `JailAction`: a held "Get Out of Jail Free" card is always played automatically by the engine before `decide_jail_action` is even called (see [game-rules.md](./game-rules.md#jail)), since using it is never worse than the alternatives. Auction bidding is a single sealed round, not live/iterative — `decide_auction_bid` doesn't see anyone else's bid (see [game-rules.md](./game-rules.md#auctions)).
+
 `GameView` is a read-only projection of the current `GameState` (see [data-model.md](./data-model.md#gamestate)) — a strategy can see the whole board, every player's holdings and cash, and its own history, but cannot mutate anything directly; all changes flow back through the engine, which is what keeps the event log complete and authoritative.
+
+## Cards
+
+The Chance and Community Chest decks are the classic 16-card US-edition set, built once per game and shuffled with the game's own seeded RNG (so, like everything else, deck order is a pure function of the seed). Cards that are mechanically identical — many are just "collect/pay a flat amount from/to the bank" with different flavor text (e.g. "bank error in your favor" and "you inherit $100" are indistinguishable to the simulation) — share one effect type rather than getting a named variant each; the event log records the effect and amount, not the flavor text. A drawn "Get Out of Jail Free" card is held by the player (removed from the deck) until it's used or its holder is bankrupted, at which point it returns to the bottom of its own deck (if bankrupt to the bank) or transfers to the new owner (if bankrupt to a player) — see [game-rules.md](./game-rules.md#bankruptcy).
 
 ## Batch execution
 

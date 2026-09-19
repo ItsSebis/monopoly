@@ -8,9 +8,10 @@ pub use buy_bad::BuyBad;
 pub use buy_good::BuyGood;
 pub use buy_none::BuyNone;
 
-use crate::board::ColorGroup;
+use crate::board::{ColorGroup, BOARD_SIZE};
+use crate::building::can_build;
 use crate::state::GameView;
-use crate::strategy::{JailAction, Strategy};
+use crate::strategy::{BuildAction, JailAction, MortgageAction, Strategy};
 
 /// Construct a built-in strategy by its registered id (used by config files
 /// and the CLI). `None` for an unrecognized id, so callers can report a
@@ -38,4 +39,92 @@ fn patient_jail_action(view: &GameView, player: usize) -> JailAction {
     } else {
         JailAction::RollForDoubles
     }
+}
+
+/// Building logic shared by Buy All and Buy Good (see
+/// docs/player-strategies.md): build one increment at a time on every fully
+/// owned group, cheapest-eligible-property first, stopping once cash would
+/// drop below `reserve`. Both strategies differ only in their reserve, so
+/// this one loop (rather than near-duplicate code in each file) covers both.
+///
+/// The plan is simulated locally against `view`'s snapshot — it doesn't
+/// track the bank's house/hotel supply, since the engine already validates
+/// and silently skips any action that supply can't cover (see
+/// `BuildAction`'s doc comment), so a strategy overshooting supply is
+/// harmless, not incorrect.
+fn build_within_reserve(view: &GameView, player: usize, reserve: i64) -> Vec<BuildAction> {
+    let mut cash = view.player(player).cash;
+    let mut houses_by_group: Vec<Vec<u8>> = ColorGroup::ALL
+        .iter()
+        .map(|&g| view.group_house_counts(g))
+        .collect();
+    let mut actions = Vec::new();
+
+    loop {
+        let mut built_this_pass = false;
+        for (group_index, group) in ColorGroup::ALL.into_iter().enumerate() {
+            if !view.owns_full_group(player, group) {
+                continue;
+            }
+            for (member_index, space) in view.board.group_members(group).enumerate() {
+                let Some(cost) = view.board.space(space).house_cost() else {
+                    continue;
+                };
+                let affordable = cash - cost as i64 >= reserve;
+                if affordable
+                    && can_build(
+                        &houses_by_group[group_index],
+                        member_index,
+                        view.rules.even_build_rule,
+                    )
+                {
+                    actions.push(BuildAction::Build(space));
+                    houses_by_group[group_index][member_index] += 1;
+                    cash -= cost as i64;
+                    built_this_pass = true;
+                }
+            }
+        }
+        if !built_this_pass {
+            return actions;
+        }
+    }
+}
+
+/// Cash-raising logic shared by every strategy that can own property (Buy
+/// None never does, so it never needs this): sell houses and mortgage
+/// unmortgaged properties, cheapest purchase price first, until `shortfall`
+/// is covered. Houses on a property are always sold before it's mortgaged,
+/// matching the official rule.
+fn raise_cash_cheapest_first(
+    view: &GameView,
+    player: usize,
+    shortfall: u32,
+) -> Vec<MortgageAction> {
+    let mut candidates: Vec<usize> = (0..BOARD_SIZE)
+        .filter(|&s| view.owner_of(s) == Some(player) && !view.property(s).mortgaged)
+        .collect();
+    candidates.sort_by_key(|&s| view.board.space(s).price().unwrap_or(0));
+
+    let mut actions = Vec::new();
+    let mut raised: u32 = 0;
+    for space in candidates {
+        if raised >= shortfall {
+            break;
+        }
+        for _ in 0..view.property(space).houses {
+            if raised >= shortfall {
+                break;
+            }
+            actions.push(MortgageAction::SellHouse(space));
+            raised += view.board.space(space).house_cost().unwrap_or(0) / 2;
+        }
+        if raised < shortfall {
+            if let Some(price) = view.board.space(space).price() {
+                actions.push(MortgageAction::Mortgage(space));
+                raised += price / 2;
+            }
+        }
+    }
+    actions
 }

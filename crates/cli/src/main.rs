@@ -100,14 +100,20 @@ fn print_summary(seed: u64, players: &[PlayerConfig], result: &GameResult) {
     }
     println!("events: {}", result.events.len());
     for (i, player) in result.final_state.players.iter().enumerate() {
-        let properties = result
+        let owned = result
             .final_state
-            .owners
+            .properties
             .iter()
-            .filter(|o| **o == Some(i))
+            .filter(|p| p.owner == Some(i));
+        let properties = owned.clone().count();
+        let houses = owned
+            .clone()
+            .filter(|p| p.houses > 0 && p.houses < 5)
             .count();
+        let hotels = owned.clone().filter(|p| p.houses == 5).count();
+        let mortgaged = owned.filter(|p| p.mortgaged).count();
         println!(
-            "  {}: cash={} bankrupt={} properties={properties}",
+            "  {}: cash={} bankrupt={} properties={properties} (houses={houses} hotels={hotels} mortgaged={mortgaged})",
             player.name, player.cash, player.bankrupt
         );
     }

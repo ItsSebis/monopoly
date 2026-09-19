@@ -36,7 +36,7 @@ Standard 40-space board:
 ## Jail
 
 - **Entering jail**: landing on "Go To Jail", drawing a "Go to Jail" card, or rolling doubles three times in one turn. Entering jail always ends movement for that turn immediately.
-- **Leaving jail**, tried in this order once a player's turn begins in jail: (a) play a "Get Out of Jail Free" card if held, (b) pay the jail fine (default $50, configurable) if the strategy chooses to, (c) roll for doubles — success releases the player and uses that roll to move; failure keeps them jailed and ends the turn. A player who has been in jail for 3 turns without doubles must pay the fine (or use a card) and then move on the next attempt regardless of strategy preference — this cap is part of the fixed baseline, not a toggle.
+- **Leaving jail**, tried in this order once a player's turn begins in jail: (a) play a "Get Out of Jail Free" card if held, (b) pay the jail fine (default $50, configurable) if the strategy chooses to, (c) roll for doubles — success releases the player and uses that roll to move; failure keeps them jailed and ends the turn. A player gets up to 3 turns to roll doubles; if the third roll also fails, they must pay the fine immediately and move using that same roll — this cap is part of the fixed baseline, not a toggle.
 - The choice between (a)/(b)/(c) when multiple are available is a strategy decision (`Strategy::decide_jail_action`).
 
 ## Building houses and hotels
@@ -59,6 +59,7 @@ Standard 40-space board:
 - Bankrupt **to another player** (e.g. unpayable rent): all remaining properties transfer to the creditor, along with any "Get Out of Jail Free" cards, at their current mortgage state.
 - Bankrupt **to the bank** (e.g. unpayable tax): all properties return to the bank and become available for purchase/auction again.
 - The bankrupt player is removed from the game; if only one player remains, that player wins.
+- **Without houses** (Phase 1's scope), base rents are small enough relative to GO salary that two cash-accumulating strategies can occasionally out-earn each other indefinitely, with no bankruptcy ever occurring — confirmed empirically during Phase 1 implementation. This is expected, not a bug: house-building (Phase 2) multiplies rent far past salary income, which is what makes bankruptcy reliable in the real game.
 
 ## Income tax
 

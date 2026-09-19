@@ -1,0 +1,25 @@
+use crate::state::GameView;
+use crate::strategy::{JailAction, PurchaseOffer, Strategy};
+
+/// Cash reserve kept back after a purchase — small, since Buy All is fully
+/// committed to accumulating property (see docs/player-strategies.md).
+const RESERVE: i64 = 50;
+
+/// Buys every property it can still afford, and pays its way out of jail
+/// whenever it can — see docs/player-strategies.md.
+#[derive(Debug, Default)]
+pub struct BuyAll;
+
+impl Strategy for BuyAll {
+    fn decide_purchase(&mut self, view: &GameView, player: usize, offer: &PurchaseOffer) -> bool {
+        view.player(player).cash - offer.price as i64 >= RESERVE
+    }
+
+    fn decide_jail_action(&mut self, view: &GameView, player: usize) -> JailAction {
+        if view.player(player).cash >= view.rules.jail_fine as i64 {
+            JailAction::PayFine
+        } else {
+            JailAction::RollForDoubles
+        }
+    }
+}

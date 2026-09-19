@@ -10,6 +10,7 @@ pub mod events;
 pub mod game;
 pub mod rent;
 pub mod rules;
+pub mod run_record;
 pub mod state;
 pub mod stats;
 pub mod strategies;
@@ -25,5 +26,9 @@ pub use config::{GameConfig, PlayerConfig};
 pub use events::{Event, EventEnvelope};
 pub use game::{ConfigError, Game, GameResult};
 pub use rules::{IncomeTaxMode, RuleSet};
+pub use run_record::{
+    build_batch_run_record, build_single_run_record, derive_batch_seeds, BatchRunRecord,
+    SingleRunRecord,
+};
 pub use stats::{compute_stats, PerGameStats};
 pub use strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};

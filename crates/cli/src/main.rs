@@ -4,11 +4,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use monopoly_engine::{
-    compute_stats, run_batch, BatchResult, Board, Game, GameConfig, GameResult, PerGameStats,
-    PlayerConfig,
+    build_batch_run_record, compute_stats, derive_batch_seeds, BatchRunRecord, Board, Game,
+    GameConfig, GameResult, PerGameStats, PlayerConfig, SingleRunRecord,
 };
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use serde::Serialize;
 
 #[derive(Parser)]
@@ -54,21 +52,6 @@ enum Command {
     },
 }
 
-#[derive(Serialize)]
-struct RunOutputFile<'a> {
-    seed: u64,
-    #[serde(flatten)]
-    result: &'a GameResult,
-    final_stats: PerGameStats,
-}
-
-#[derive(Serialize)]
-struct BatchOutputFile<'a> {
-    base_seed: u64,
-    #[serde(flatten)]
-    result: &'a BatchResult,
-}
-
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Run { config, seed, out } => run(&config, seed, out.as_deref()),
@@ -99,17 +82,25 @@ fn run(config_path: &Path, seed: Option<u64>, out: Option<&Path>) -> ExitCode {
 
     match out {
         Some(path) => {
-            let output = RunOutputFile {
+            // Built by hand rather than via `build_single_run_record` — that
+            // helper re-simulates the game itself, which would run it twice.
+            // `final_state` is deliberately not part of the archived shape
+            // (docs/data-model.md): it's fully derivable by replaying
+            // `events`, the same determinism-as-storage-optimization
+            // principle `docs/architecture.md` already applies to batches.
+            let record = SingleRunRecord {
+                rule_set: config.rules,
+                players: config.players,
                 seed,
-                result: &result,
+                events: result.events,
                 final_stats,
             };
-            if let Err(e) = write_json(path, &output) {
+            if let Err(e) = write_json(path, &record) {
                 return fail(&e);
             }
             println!(
                 "seed {seed}: wrote {} events to {}",
-                result.events.len(),
+                record.events.len(),
                 path.display()
             );
         }
@@ -132,37 +123,36 @@ fn batch(
     };
 
     let base_seed = seed.unwrap_or_else(rand::random);
-    let mut rng = StdRng::seed_from_u64(base_seed);
-    let seeds: Vec<u64> = (0..games).map(|_| rng.gen()).collect();
+    let seeds = derive_batch_seeds(base_seed, games);
 
-    let result = match run_batch(config.rules, config.players.clone(), &seeds) {
+    let record = match build_batch_run_record(config.rules, config.players, seeds) {
         Ok(r) => r,
         Err(e) => return fail(&e.to_string()),
     };
 
     if let Some(path) = csv {
-        if let Err(e) = write_csv(path, &config.players, &result) {
+        if let Err(e) = write_csv(path, &record) {
             return fail(&e);
         }
-        println!("wrote {} rows to {}", result.per_game.len(), path.display());
+        println!(
+            "wrote {} rows to {}",
+            record.per_game_summary.len(),
+            path.display()
+        );
     }
 
     match out {
         Some(path) => {
-            let output = BatchOutputFile {
-                base_seed,
-                result: &result,
-            };
-            if let Err(e) = write_json(path, &output) {
+            if let Err(e) = write_json(path, &record) {
                 return fail(&e);
             }
             println!(
                 "base seed {base_seed}: wrote {} games to {}",
-                result.per_game.len(),
+                record.per_game_summary.len(),
                 path.display()
             );
         }
-        None => print_batch_summary(base_seed, &result),
+        None => print_batch_summary(base_seed, &record),
     }
 
     ExitCode::SUCCESS
@@ -216,22 +206,22 @@ fn print_summary(seed: u64, players: &[PlayerConfig], result: &GameResult, stats
     }
 }
 
-fn print_batch_summary(base_seed: u64, result: &BatchResult) {
+fn print_batch_summary(base_seed: u64, record: &BatchRunRecord) {
     println!("base seed: {base_seed}");
-    println!("games: {}", result.aggregate.games);
+    println!("games: {}", record.aggregate_stats.games);
 
     println!("win rate by strategy:");
-    for (strategy, rate) in &result.aggregate.win_rate_by_strategy {
+    for (strategy, rate) in &record.aggregate_stats.win_rate_by_strategy {
         println!("  {strategy}: {:.1}%", rate * 100.0);
     }
 
     println!("roi by strategy (rent collected / cost basis):");
-    for (strategy, roi) in &result.aggregate.roi_by_strategy {
+    for (strategy, roi) in &record.aggregate_stats.roi_by_strategy {
         println!("  {strategy}: {roi:.2}");
     }
 
     println!("head-to-head win rate (row beat column, when one of the two won):");
-    for (winner, opponents) in &result.aggregate.head_to_head {
+    for (winner, opponents) in &record.aggregate_stats.head_to_head {
         for (loser, cell) in opponents {
             if cell.total > 0 {
                 println!(
@@ -248,14 +238,14 @@ fn print_batch_summary(base_seed: u64, result: &BatchResult) {
 /// Minimal hand-rolled CSV writer (one flat summary row per game) — not
 /// worth a dependency for four columns; `name`/`strategy` fields are quoted
 /// since they come from user-supplied config.
-fn write_csv(path: &Path, players: &[PlayerConfig], result: &BatchResult) -> Result<(), String> {
+fn write_csv(path: &Path, record: &BatchRunRecord) -> Result<(), String> {
     let mut out = String::from("seed,winner_index,winner_name,winner_strategy,turns\n");
-    for game in &result.per_game {
+    for game in &record.per_game_summary {
         let (index, name, strategy) = match game.winner {
             Some(w) => (
                 w.to_string(),
-                csv_field(&players[w].name),
-                csv_field(&players[w].strategy),
+                csv_field(&record.players[w].name),
+                csv_field(&record.players[w].strategy),
             ),
             None => (String::new(), String::new(), String::new()),
         };

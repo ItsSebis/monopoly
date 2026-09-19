@@ -29,6 +29,11 @@ enum Command {
         /// Write the full result as JSON here instead of printing a summary.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// POST the run to a running `monopoly-server`'s `/runs` endpoint
+        /// (e.g. `http://localhost:3000`) after the local `--out`/summary
+        /// handling completes.
+        #[arg(long)]
+        archive_url: Option<String>,
     },
     /// Run many games in parallel and report aggregate statistics.
     Batch {
@@ -49,23 +54,46 @@ enum Command {
         /// Write one row per game (seed, winner, turns) here as CSV.
         #[arg(long)]
         csv: Option<PathBuf>,
+        /// POST the batch to a running `monopoly-server`'s `/runs` endpoint
+        /// (e.g. `http://localhost:3000`) after the local `--out`/`--csv`/
+        /// summary handling completes.
+        #[arg(long)]
+        archive_url: Option<String>,
     },
 }
 
 fn main() -> ExitCode {
     match Cli::parse().command {
-        Command::Run { config, seed, out } => run(&config, seed, out.as_deref()),
+        Command::Run {
+            config,
+            seed,
+            out,
+            archive_url,
+        } => run(&config, seed, out.as_deref(), archive_url.as_deref()),
         Command::Batch {
             config,
             games,
             seed,
             out,
             csv,
-        } => batch(&config, games, seed, out.as_deref(), csv.as_deref()),
+            archive_url,
+        } => batch(
+            &config,
+            games,
+            seed,
+            out.as_deref(),
+            csv.as_deref(),
+            archive_url.as_deref(),
+        ),
     }
 }
 
-fn run(config_path: &Path, seed: Option<u64>, out: Option<&Path>) -> ExitCode {
+fn run(
+    config_path: &Path,
+    seed: Option<u64>,
+    out: Option<&Path>,
+    archive_url: Option<&str>,
+) -> ExitCode {
     let config = match load_config(config_path) {
         Ok(c) => c,
         Err(e) => return fail(&e),
@@ -80,21 +108,26 @@ fn run(config_path: &Path, seed: Option<u64>, out: Option<&Path>) -> ExitCode {
     let board = Board::standard();
     let final_stats = compute_stats(&board, &config.players, &config.rules, &result);
 
-    match out {
-        Some(path) => {
-            // Built by hand rather than via `build_single_run_record` — that
-            // helper re-simulates the game itself, which would run it twice.
-            // `final_state` is deliberately not part of the archived shape
-            // (docs/data-model.md): it's fully derivable by replaying
-            // `events`, the same determinism-as-storage-optimization
-            // principle `docs/architecture.md` already applies to batches.
-            let record = SingleRunRecord {
-                rule_set: config.rules,
-                players: config.players,
-                seed,
-                events: result.events,
-                final_stats,
-            };
+    if out.is_none() {
+        print_summary(seed, &config.players, &result, &final_stats);
+    }
+
+    if out.is_some() || archive_url.is_some() {
+        // Built by hand rather than via `build_single_run_record` — that
+        // helper re-simulates the game itself, which would run it twice.
+        // `final_state` is deliberately not part of the archived shape
+        // (docs/data-model.md): it's fully derivable by replaying `events`,
+        // the same determinism-as-storage-optimization principle
+        // `docs/architecture.md` already applies to batches.
+        let record = SingleRunRecord {
+            rule_set: config.rules,
+            players: config.players,
+            seed,
+            events: result.events,
+            final_stats,
+        };
+
+        if let Some(path) = out {
             if let Err(e) = write_json(path, &record) {
                 return fail(&e);
             }
@@ -104,7 +137,11 @@ fn run(config_path: &Path, seed: Option<u64>, out: Option<&Path>) -> ExitCode {
                 path.display()
             );
         }
-        None => print_summary(seed, &config.players, &result, &final_stats),
+        if let Some(url) = archive_url {
+            if let Err(e) = archive(url, &record) {
+                return fail(&e);
+            }
+        }
     }
 
     ExitCode::SUCCESS
@@ -116,6 +153,7 @@ fn batch(
     seed: Option<u64>,
     out: Option<&Path>,
     csv: Option<&Path>,
+    archive_url: Option<&str>,
 ) -> ExitCode {
     let config = match load_config(config_path) {
         Ok(c) => c,
@@ -155,6 +193,12 @@ fn batch(
         None => print_batch_summary(base_seed, &record),
     }
 
+    if let Some(url) = archive_url {
+        if let Err(e) = archive(url, &record) {
+            return fail(&e);
+        }
+    }
+
     ExitCode::SUCCESS
 }
 
@@ -175,6 +219,29 @@ fn load_config(path: &Path) -> Result<GameConfig, String> {
 fn write_json(path: &Path, output: &impl Serialize) -> Result<(), String> {
     let json = serde_json::to_string_pretty(output).expect("simulation output is serializable");
     fs::write(path, json).map_err(|e| format!("writing {}: {e}", path.display()))
+}
+
+/// POSTs a `SingleRunRecord`/`BatchRunRecord` to `{archive_url}/runs`
+/// (`docs/api.md`) and prints the archived id. `ureq` is a small, blocking
+/// HTTP client — the CLI stays fully synchronous, with no reason to pull
+/// `tokio` in just for this one request.
+fn archive(archive_url: &str, record: &impl Serialize) -> Result<(), String> {
+    let url = format!("{}/runs", archive_url.trim_end_matches('/'));
+    let response = ureq::post(&url)
+        .send_json(record)
+        .map_err(|e| format!("archiving to {url}: {e}"))?;
+    let body: serde_json::Value = response
+        .into_json()
+        .map_err(|e| format!("reading archive response from {url}: {e}"))?;
+    match body.get("id").and_then(|id| id.as_str()) {
+        Some(id) => println!("archived as {id} ({url})"),
+        None => {
+            return Err(format!(
+                "archive response from {url} had no `id` field: {body}"
+            ))
+        }
+    }
+    Ok(())
 }
 
 fn print_summary(seed: u64, players: &[PlayerConfig], result: &GameResult, stats: &PerGameStats) {

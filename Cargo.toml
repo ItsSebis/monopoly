@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/engine", "crates/cli", "crates/server"]
+members = ["crates/engine", "crates/cli", "crates/server", "crates/engine-wasm"]
 
 [workspace.package]
 edition = "2021"

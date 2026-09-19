@@ -1,0 +1,62 @@
+//! `wasm-bindgen` bindings around `engine` for the browser (`docs/roadmap.md`
+//! Phase 5). Thin glue only: every method delegates directly to `Game` and
+//! serializes with `serde_json` (plain JSON strings, not `JsValue`, so this
+//! stays one dependency lighter and data still moves as the same JSON text
+//! every other consumer — CLI files, server bodies — already uses). No
+//! rules logic lives here or in the browser; this crate only exists to cross
+//! the wasm boundary.
+
+use monopoly_engine::{ConfigError, Game, GameConfig};
+use wasm_bindgen::prelude::*;
+
+// Named distinctly from wasm-bindgen's own generated default-export module
+// loader (conventionally imported as `init` in JS) to avoid two same-named
+// but unrelated "init" concepts in the same module.
+#[wasm_bindgen(start)]
+fn set_panic_hook() {
+    console_error_panic_hook::set_once();
+}
+
+#[wasm_bindgen]
+pub struct WasmGame {
+    inner: Game,
+}
+
+#[wasm_bindgen]
+impl WasmGame {
+    /// `config_json` is a `GameConfig` (`{ rules, players }`, `rules`
+    /// optional) — the same shape `monopoly run --config` and the server's
+    /// `POST /runs/batch` already accept, so the browser's config form
+    /// produces exactly what every other caller does.
+    #[wasm_bindgen(constructor)]
+    pub fn new(config_json: &str, seed: u64) -> Result<WasmGame, JsError> {
+        let config: GameConfig =
+            serde_json::from_str(config_json).map_err(|e| JsError::new(&e.to_string()))?;
+        let inner = Game::new(config.rules, &config.players, seed)
+            .map_err(|e: ConfigError| JsError::new(&e.to_string()))?;
+        Ok(WasmGame { inner })
+    }
+
+    /// Advances the game by exactly one player's turn and returns that
+    /// turn's events as a JSON array (`EventEnvelope[]`).
+    pub fn step_turn(&mut self) -> String {
+        serde_json::to_string(self.inner.step_turn()).expect("events always serialize")
+    }
+
+    /// The current `GameState` as JSON — the board renderer's per-turn
+    /// authoritative re-sync (see `docs/frontend.md`).
+    pub fn state(&self) -> String {
+        serde_json::to_string(self.inner.state()).expect("state always serializes")
+    }
+
+    pub fn is_over(&self) -> bool {
+        self.inner.is_over()
+    }
+}
+
+/// The registered strategy ids, as a JSON string array — for the browser's
+/// strategy dropdown.
+#[wasm_bindgen]
+pub fn strategy_ids() -> String {
+    serde_json::to_string(monopoly_engine::STRATEGY_IDS).expect("strategy ids always serialize")
+}

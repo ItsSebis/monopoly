@@ -9,9 +9,25 @@ web/src/
   board/       # renders the 40-space board + player tokens from a GameState snapshot
   controls/    # config forms (RuleSet + PlayerConfig editor) and playback controls
   worker/      # a Web Worker wrapping engine-wasm — simulation runs off the main thread
-  charts/      # analysis dashboard (Chart.js), consumes final_stats/aggregate_stats
-  history/     # history browser: calls the server API, falls back to a localStorage cache
+  eventLog.ts  # formats an event into a human-readable line (Phase 5)
+  types.ts     # TS mirror of the JSON shapes engine serializes (Phase 5)
+  main.ts      # wires the config form, worker, board, and playback controls together (Phase 5)
+  charts/      # analysis dashboard (Chart.js), consumes final_stats/aggregate_stats (Phase 6)
+  history/     # history browser: calls the server API, falls back to a localStorage cache (Phase 6)
 ```
+
+Plain TypeScript + Vite, no UI framework — the project's small-surface-area bias and a DOM-rendered (not canvas) board keep the whole thing easy to inspect and style directly.
+
+### Development setup
+
+Building `engine-wasm` needs a couple of one-time steps beyond `npm install`:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-pack
+```
+
+`npm run dev`/`npm run build` in `web/` regenerate the wasm bindings automatically first (`predev`/`prebuild` run `wasm-pack build ../crates/engine-wasm --target web --out-dir ../../web/src/wasm` — note `--out-dir` is resolved relative to the *crate* path, not the invoking shell's directory, which is easy to get wrong).
 
 ## Config forms → engine input
 
@@ -19,10 +35,13 @@ The config screen is a direct editor for `RuleSet` and a list of `PlayerConfig` 
 
 ## Live playback
 
-1. On "start", the main thread posts `{ rule_set, players, seed }` to the Worker, which constructs a `Game` via `engine-wasm` and calls `step_turn()` in a loop, posting each turn's events back to the main thread.
-2. The main thread buffers incoming events and drains them on a timer whose interval is derived from the speed control (a multiplier, e.g. 1x/4x/32x/"instant"), applying each event to the board renderer as it's drained. This is why speed control needs no engine support at all (see [simulation-engine.md](./simulation-engine.md#turn-state-machine)) — it's purely how fast the UI consumes an already-produced event stream.
-3. Pause stops draining (the Worker may keep simulating ahead, or the main thread can flow-control it — an implementation detail, not a contract); step-forward drains exactly one event.
-4. On game end, the UI offers to save the run (`POST /runs` to the server) and always shows the local analysis dashboard immediately, using the events already in memory — saving is for persistence, not required to see results.
+1. On "start", the main thread posts `{ config, seed }` (`config` a full `GameConfig` — `rule_set` + `players`) to the Worker, which constructs a `WasmGame` and calls `step_turn()` in a loop until `is_over()`, posting each turn's `{ events, state }` back to the main thread as it goes — the Worker always races ahead of whatever the main thread has actually drained (implemented as the simplest correct choice; the alternative, the main thread flow-controlling the Worker, was left unimplemented since nothing in Phase 5 needs it).
+2. The main thread buffers incoming events into one flat queue and drains them individually on a timer whose interval is derived from the speed control (a multiplier, e.g. 1x/4x/32x/"instant"), applying each event to the board renderer as it's drained. This is why speed control needs no engine support at all (see [simulation-engine.md](./simulation-engine.md#turn-state-machine)) — it's purely how fast the UI consumes an already-produced event stream. Per-event animation is limited to moving a player's token (the only per-event visual worth animating); ownership, houses, mortgages, and cash always come from a full re-sync to that turn's authoritative `GameState`, applied once every one of that turn's events has drained — the engine's own state is always the ground truth, never something reconstructed by interpreting events.
+3. Pause stops draining (the Worker keeps simulating ahead); step-forward drains exactly one event regardless of play/pause state.
+4. **`Event::GameEnded` is only ever recorded by `Game::run_to_completion`, never by `step_turn`** — live playback drives `step_turn` directly, so it never sees that event. Once `is_over()` is true, the Worker instead derives the winner the same way `run_to_completion` does (the one non-bankrupt player, if exactly one remains) from the final `state`, and the main thread shows the winner banner once playback has actually drained through to that point (not the instant the Worker itself finishes, which can be well ahead at slower speeds).
+5. **Phase 5 does not offer to save the run.** That needs the server, and Phase 5's own demo bar is "zero server running" — wiring `POST /runs` into this flow is Phase 6's job, alongside the rest of the browser's server integration (batch + history). The local analysis dashboard mentioned above is also Phase 6 (see [Charts](#charts)); Phase 5's UI is the board, the event log, and playback controls only.
+
+Purely cosmetic board data — space names, colors, and grid position — has no engine-side representation (confirmed: `Board`/`SpaceKind` carry only price/rent/group, never a display name); `board/layout.ts` hardcodes a 40-entry table keyed by the same space index the engine uses everywhere. This is a deliberate line: the engine stays the single source of truth for anything a *decision* depends on, but nothing depends on a space's display name.
 
 ## Batch runs from the UI
 

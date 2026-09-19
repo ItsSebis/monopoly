@@ -8,7 +8,7 @@ pub use buy_bad::BuyBad;
 pub use buy_good::BuyGood;
 pub use buy_none::BuyNone;
 
-use crate::board::{ColorGroup, BOARD_SIZE};
+use crate::board::{ColorGroup, SpaceKind, BOARD_SIZE};
 use crate::building::can_build;
 use crate::state::GameView;
 use crate::strategy::{BuildAction, JailAction, MortgageAction, Strategy};
@@ -94,13 +94,24 @@ fn build_within_reserve(view: &GameView, player: usize, reserve: i64) -> Vec<Bui
 /// Cash-raising logic shared by every strategy that can own property (Buy
 /// None never does, so it never needs this): sell houses and mortgage
 /// unmortgaged properties, cheapest purchase price first, until `shortfall`
-/// is covered. Houses on a property are always sold before it's mortgaged,
-/// matching the official rule.
+/// is covered. Every building in a color group is sold before any property
+/// in it is mortgaged, matching the official rule.
+///
+/// Unlike `build_within_reserve` — where overshooting is harmless, since the
+/// engine just skips what it can't do — the plan here has to be *legal*, not
+/// merely optimistic: the engine silently drops a sale the even-build rule
+/// forbids (only the group's most-built property may be sold from) or a
+/// mortgage on a still-built-up group, and every dropped action is cash the
+/// strategy counted but never received, which is the difference between
+/// surviving a payment and going bankrupt holding a full board. So the plan
+/// simulates house counts as it goes and always sells from the group's
+/// most-built property.
 fn raise_cash_cheapest_first(
     view: &GameView,
     player: usize,
     shortfall: u32,
 ) -> Vec<MortgageAction> {
+    let mut houses: Vec<u8> = (0..BOARD_SIZE).map(|s| view.property(s).houses).collect();
     let mut candidates: Vec<usize> = (0..BOARD_SIZE)
         .filter(|&s| view.owner_of(s) == Some(player) && !view.property(s).mortgaged)
         .collect();
@@ -112,14 +123,25 @@ fn raise_cash_cheapest_first(
         if raised >= shortfall {
             break;
         }
-        for _ in 0..view.property(space).houses {
-            if raised >= shortfall {
+        // Railroads and utilities have no group to clear and go straight to
+        // the mortgage below.
+        let group_members: Vec<usize> = match view.board.space(space) {
+            SpaceKind::Street { group, .. } => view.board.group_members(group).collect(),
+            _ => Vec::new(),
+        };
+        let house_cost = view.board.space(space).house_cost().unwrap_or(0);
+        while raised < shortfall {
+            let Some(&target) = group_members.iter().max_by_key(|&&m| houses[m]) else {
+                break;
+            };
+            if houses[target] == 0 {
                 break;
             }
-            actions.push(MortgageAction::SellHouse(space));
-            raised += view.board.space(space).house_cost().unwrap_or(0) / 2;
+            actions.push(MortgageAction::SellHouse(target));
+            houses[target] -= 1;
+            raised += house_cost / 2;
         }
-        if raised < shortfall {
+        if raised < shortfall && group_members.iter().all(|&m| houses[m] == 0) {
             if let Some(price) = view.board.space(space).price() {
                 actions.push(MortgageAction::Mortgage(space));
                 raised += price / 2;

@@ -242,7 +242,12 @@ impl Game {
         let new = (old + spaces as usize) % BOARD_SIZE;
         self.state.players[player].position = new;
         self.record(player, Event::Move { from: old, to: new });
-        if new <= old {
+        // `spaces > 0` guards against a `move_toward` call that lands a
+        // player exactly where they already stand (`new == old`), which
+        // would otherwise misread as "wrapped past GO" and pay a spurious
+        // salary. No current card can trigger this (none land on Chance or
+        // Community Chest itself), but nothing here should rely on that.
+        if spaces > 0 && new <= old {
             self.pay_from_bank(player, self.rules.go_salary);
             self.record(player, Event::PassGo);
         }
@@ -305,6 +310,12 @@ impl Game {
     }
 
     fn bankrupt_player(&mut self, player: usize, payee: Option<usize>) {
+        // Whatever the player did manage to raise still changes hands: a
+        // creditor receives it (official rules — the creditor gets cash,
+        // properties and cards), and only a bankruptcy to the bank takes it
+        // out of play. Zeroing it unconditionally would destroy money at the
+        // exact moment that decides most games.
+        let remaining_cash = self.state.players[player].cash.max(0);
         self.state.players[player].cash = 0;
         self.state.players[player].bankrupt = true;
         self.state.players[player].in_jail = false;
@@ -328,6 +339,7 @@ impl Game {
         let goojf_cards = std::mem::take(&mut self.state.players[player].goojf_cards);
         match payee {
             Some(payee) => {
+                self.state.players[payee].cash += remaining_cash;
                 for space in 0..BOARD_SIZE {
                     if self.state.properties[space].owner == Some(player) {
                         self.state.properties[space].owner = Some(payee);
@@ -471,9 +483,13 @@ impl Game {
         }
     }
 
+    /// Records the debt before settling it: `charge` can emit `Mortgaged` /
+    /// `HouseSold` / `Bankrupted` events of its own, and those only read
+    /// correctly in the log when the payment that triggered them comes first
+    /// (see `Event::RentPaid`'s doc comment).
     fn charge_tax(&mut self, player: usize, amount: u32, kind: TaxKind) {
-        self.charge(player, amount, None);
         self.record(player, Event::TaxPaid { amount, kind });
+        self.charge(player, amount, None);
     }
 
     /// Offers `space` for purchase; if declined (or unaffordable) and
@@ -556,7 +572,6 @@ impl Game {
                     return; // mortgaged properties earn no rent
                 }
                 let amount = self.rent_due(space, owner, dice_total);
-                self.charge(player, amount, Some(owner));
                 self.record(
                     player,
                     Event::RentPaid {
@@ -565,6 +580,7 @@ impl Game {
                         space,
                     },
                 );
+                self.charge(player, amount, Some(owner));
             }
             Some(_) => {}
         }
@@ -700,6 +716,19 @@ impl Game {
         if prop.owner != Some(player) || prop.mortgaged || prop.houses > 0 {
             return false;
         }
+        // Official rule (docs/game-rules.md's Mortgaging section): every
+        // building in the property's color group must be sold back to the
+        // bank first, not just the ones on this property — the even-build
+        // rule lets one member sit at 0 houses while its neighbors are built.
+        if let SpaceKind::Street { group, .. } = self.board.space(space) {
+            let group_is_built_up = self
+                .board
+                .group_members(group)
+                .any(|s| self.state.properties[s].houses > 0);
+            if group_is_built_up {
+                return false;
+            }
+        }
         let Some(price) = self.board.space(space).price() else {
             return false;
         };
@@ -767,7 +796,7 @@ impl Game {
                         h => per_house * h as u32,
                     })
                     .sum();
-                self.charge(player, total, None);
+                self.charge_tax(player, total, TaxKind::Repair);
             }
             CardEffect::GoBackThreeSpaces => {
                 let current = self.state.players[player].position;
@@ -795,7 +824,6 @@ impl Game {
             Some(owner) if owner != player && !self.state.properties[target].mortgaged => {
                 let amount =
                     crate::rent::railroad_rent(self.view().owned_railroad_count(owner)) * 2;
-                self.charge(player, amount, Some(owner));
                 self.record(
                     player,
                     Event::RentPaid {
@@ -804,6 +832,7 @@ impl Game {
                         space: target,
                     },
                 );
+                self.charge(player, amount, Some(owner));
             }
             _ => {}
         }
@@ -817,7 +846,6 @@ impl Game {
             Some(owner) if owner != player && !self.state.properties[target].mortgaged => {
                 let (first, second) = self.roll_dice(player);
                 let amount = 10 * (first + second) as u32;
-                self.charge(player, amount, Some(owner));
                 self.record(
                     player,
                     Event::RentPaid {
@@ -826,6 +854,7 @@ impl Game {
                         space: target,
                     },
                 );
+                self.charge(player, amount, Some(owner));
             }
             _ => {}
         }
@@ -907,6 +936,100 @@ mod tests {
             game.state.properties[3].owner,
             Some(1),
             "bankruptcy-to-player transfers remaining properties to the payee"
+        );
+    }
+
+    #[test]
+    fn bankruptcy_to_a_player_hands_the_creditor_the_remaining_cash_too() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        game.state.players[0].cash = 10;
+        game.state.properties[3].owner = Some(0); // mortgages for 30, so 40 is all they can raise
+        let creditor_before = game.state.players[1].cash;
+
+        game.charge(0, 1_000, Some(1));
+
+        assert_eq!(
+            game.state.players[1].cash,
+            creditor_before + 40,
+            "the creditor receives every dollar the debtor managed to raise"
+        );
+        assert_eq!(game.state.players[0].cash, 0);
+    }
+
+    #[test]
+    fn bankruptcy_to_the_bank_takes_the_remaining_cash_out_of_play() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        game.state.players[0].cash = 10;
+        game.state.properties[3].owner = Some(0);
+        let other_before = game.state.players[1].cash;
+
+        game.charge(0, 1_000, None);
+
+        assert_eq!(game.state.players[0].cash, 0);
+        assert_eq!(
+            game.state.players[1].cash, other_before,
+            "no other player gains from a bankruptcy to the bank"
+        );
+    }
+
+    #[test]
+    fn a_property_cannot_be_mortgaged_while_its_group_still_has_buildings() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        // The even-build rule allows Mediterranean to sit at 0 houses while
+        // Baltic has 1; the official mortgage rule still forbids mortgaging
+        // either until the whole group is cleared.
+        game.state.properties[1].owner = Some(0);
+        game.state.properties[3].owner = Some(0);
+        game.state.properties[3].houses = 1;
+
+        assert!(
+            !game.try_mortgage(0, 1),
+            "the group is still built up, so no member may be mortgaged"
+        );
+        assert!(!game.state.properties[1].mortgaged);
+
+        game.state.properties[3].houses = 0;
+        assert!(game.try_mortgage(0, 1), "clear group, mortgage allowed");
+    }
+
+    /// A cash-raising plan the engine can only partly execute is worse than
+    /// useless: the strategy counts the skipped actions toward the shortfall
+    /// and the player goes bankrupt holding assets it never liquidated.
+    #[test]
+    fn a_cash_raising_plan_actually_raises_what_it_claims_to() {
+        let players = vec![
+            PlayerConfig {
+                name: "A".into(),
+                strategy: "buy_all".into(),
+            },
+            PlayerConfig {
+                name: "B".into(),
+                strategy: "buy_all".into(),
+            },
+        ];
+        let mut game = Game::new(RuleSet::default(), &players, 0).unwrap();
+
+        // The whole Light Blue group, built unevenly but legally (2/2/1).
+        // Selling these needs the even-build rule respected in the plan, and
+        // mortgaging any of them needs the whole group cleared first.
+        for (space, houses) in [(6usize, 2u8), (8, 2), (9, 1)] {
+            game.state.properties[space].owner = Some(0);
+            game.state.properties[space].houses = houses;
+        }
+        game.state.players[0].cash = 0;
+
+        // Everything those three are worth: 5 houses at $25 each ($125) plus
+        // mortgages of $50 + $50 + $60 ($160). Asking for exactly that leaves
+        // the plan no room to over-count an action the engine would skip.
+        game.raise_cash(0, 285);
+
+        assert_eq!(
+            game.state.players[0].cash, 285,
+            "the plan must actually realize every dollar it counted"
+        );
+        assert!(
+            (0..BOARD_SIZE).all(|s| game.state.properties[s].houses == 0),
+            "every house should have been sold before any mortgage"
         );
     }
 

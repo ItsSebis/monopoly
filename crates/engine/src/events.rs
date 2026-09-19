@@ -7,6 +7,11 @@ use crate::strategy::JailAction;
 pub enum TaxKind {
     Income,
     Luxury,
+    /// A Chance/Community Chest repair assessment (`CardEffect::PropertyRepairAssessment`).
+    /// The `CardDrawn` event for that card only carries its per-house/per-hotel
+    /// rates, not the total owed — this is where the actual amount charged
+    /// is recorded.
+    Repair,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

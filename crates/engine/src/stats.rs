@@ -111,25 +111,69 @@ struct DebtOutcome {
     paid: bool,
 }
 
-/// The running cash/building state `compute_stats` reconstructs by replaying
-/// events — bundled into one type so `apply_debt` (which needs all three)
-/// doesn't have to take them as separate parameters.
+/// The cash and building state `compute_stats` reconstructs as it replays
+/// the log. House counts use the engine's encoding (`state.rs`): 0 = bare,
+/// 1-4 = houses, 5 = a hotel, i.e. the stored number is also the number of
+/// building increments paid for.
 struct Ledger<'a> {
-    cash: &'a mut [i64],
-    houses: &'a mut [u8],
     board: &'a Board,
+    cash: Vec<i64>,
+    houses: Vec<u8>,
 }
 
-impl Ledger<'_> {
+impl<'a> Ledger<'a> {
+    fn new(board: &'a Board, players: usize, starting_cash: u32) -> Self {
+        Ledger {
+            board,
+            cash: vec![starting_cash as i64; players],
+            houses: vec![0; BOARD_SIZE],
+        }
+    }
+
+    /// Mortgaging pays back half the list price.
+    fn credit_mortgage(&mut self, player: usize, space: usize) {
+        let price = self.board.space(space).price().unwrap_or(0);
+        self.cash[player] += (price / 2) as i64;
+    }
+
+    /// Selling a building pays back half its cost; selling off a hotel
+    /// leaves four houses standing.
+    fn credit_house_sale(&mut self, player: usize, space: usize) {
+        let cost = self.board.space(space).house_cost().unwrap_or(0);
+        self.cash[player] += (cost / 2) as i64;
+        self.houses[space] = self.houses[space].saturating_sub(1);
+    }
+
+    /// What `space` adds to its owner's net worth, and equally its ROI cost
+    /// basis: the list price plus everything built on it.
+    fn space_value(&self, space: usize) -> u32 {
+        let price = self.board.space(space).price().unwrap_or(0);
+        let house_cost = self.board.space(space).house_cost().unwrap_or(0);
+        price + house_cost * self.houses[space] as u32
+    }
+
+    /// Cash on hand plus the value of every property owned, per player
+    /// (docs/analysis-and-metrics.md "Net worth over time").
+    fn net_worth(&self, owner: &[Option<usize>]) -> Vec<u32> {
+        (0..self.cash.len())
+            .map(|player| {
+                let properties: u32 = (0..BOARD_SIZE)
+                    .filter(|&space| owner[space] == Some(player))
+                    .map(|space| self.space_value(space))
+                    .sum();
+                self.cash[player].max(0) as u32 + properties
+            })
+            .collect()
+    }
+
     /// `payer` owes `amount`. Before failing, the engine tries to raise cash
     /// by selling houses/mortgaging `payer`'s own properties (`raise_cash`)
     /// — so a `Bankrupted` event for `payer` isn't necessarily the very next
     /// envelope, it can follow a run of `payer`'s own `Mortgaged`/`HouseSold`
-    /// events first. This applies those events' cash and house-count effects
-    /// itself and reports how many envelopes it consumed, stopping just
-    /// *before* any trailing `Bankrupted` envelope (which the caller's own
-    /// `Event::Bankrupted` handling applies uniformly regardless of which
-    /// debt triggered it).
+    /// events first. This applies those events itself and reports how many
+    /// envelopes it consumed, stopping just *before* any trailing
+    /// `Bankrupted` envelope (which the caller's own `Event::Bankrupted`
+    /// handling applies uniformly regardless of which debt triggered it).
     ///
     /// The decision of whether the debt went through mirrors `Game::charge`
     /// exactly: raise cash only while `payer` still can't cover `amount`,
@@ -144,7 +188,7 @@ impl Ledger<'_> {
     /// raise-cash envelope left over (the engine applies every action a
     /// strategy returns, which can overshoot) is picked up either by the
     /// next charge or by the caller's own bare `Mortgaged`/`HouseSold` arms,
-    /// which apply the identical cash and house-count effects.
+    /// which credit it identically.
     fn apply_debt(
         &mut self,
         events: &[EventEnvelope],
@@ -153,71 +197,30 @@ impl Ledger<'_> {
         amount: u32,
         payee: Option<usize>,
     ) -> DebtOutcome {
-        let mut peek = start;
+        let mut cursor = start;
         while self.cash[payer] < amount as i64 {
-            let Some(env) = events.get(peek) else { break };
+            let Some(env) = events.get(cursor) else { break };
             if env.player != payer {
                 break;
             }
-            match &env.event {
-                Event::Mortgaged { space } => {
-                    self.cash[payer] += (self.board.space(*space).price().unwrap_or(0) / 2) as i64;
-                }
-                Event::HouseSold { space } => {
-                    self.cash[payer] +=
-                        (self.board.space(*space).house_cost().unwrap_or(0) / 2) as i64;
-                    self.houses[*space] = if self.houses[*space] == 5 {
-                        4
-                    } else {
-                        self.houses[*space].saturating_sub(1)
-                    };
-                }
+            match env.event {
+                Event::Mortgaged { space } => self.credit_mortgage(payer, space),
+                Event::HouseSold { space } => self.credit_house_sale(payer, space),
                 _ => break,
             }
-            peek += 1;
+            cursor += 1;
         }
         let paid = self.cash[payer] >= amount as i64;
         if paid {
             self.cash[payer] -= amount as i64;
-            if let Some(p) = payee {
-                self.cash[p] += amount as i64;
+            if let Some(payee) = payee {
+                self.cash[payee] += amount as i64;
             }
         }
         DebtOutcome {
-            consumed: peek - start,
+            consumed: cursor - start,
             paid,
         }
-    }
-}
-
-fn net_worth_snapshot(
-    board: &Board,
-    n: usize,
-    cash: &[i64],
-    owner: &[Option<usize>],
-    houses: &[u8],
-) -> Vec<u32> {
-    (0..n)
-        .map(|p| {
-            let base = cash[p].max(0) as u32;
-            let property_value: u32 = (0..BOARD_SIZE)
-                .filter(|&s| owner[s] == Some(p))
-                .map(|s| {
-                    let price = board.space(s).price().unwrap_or(0);
-                    let house_cost = board.space(s).house_cost().unwrap_or(0);
-                    let increments = if houses[s] == 5 { 5 } else { houses[s] as u32 };
-                    price + house_cost * increments
-                })
-                .sum();
-            base + property_value
-        })
-        .collect()
-}
-
-fn group_of(board: &Board, space: usize) -> Option<ColorGroup> {
-    match board.space(space) {
-        SpaceKind::Street { group, .. } => Some(group),
-        _ => None,
     }
 }
 
@@ -229,7 +232,7 @@ fn check_monopoly(
     turn: u32,
     out: &mut Vec<MonopolyCompleted>,
 ) {
-    let Some(group) = group_of(board, space) else {
+    let SpaceKind::Street { group, .. } = board.space(space) else {
         return;
     };
     if board
@@ -244,6 +247,26 @@ fn check_monopoly(
     }
 }
 
+/// Records a property entering `new_owner`'s hands by purchase or auction:
+/// the ownership itself, its timeline entry, and any monopoly it completes.
+fn record_acquisition(
+    board: &Board,
+    owner: &mut [Option<usize>],
+    space: usize,
+    new_owner: usize,
+    turn: u32,
+    timeline: &mut Vec<PropertyAcquired>,
+    monopolies: &mut Vec<MonopolyCompleted>,
+) {
+    owner[space] = Some(new_owner);
+    timeline.push(PropertyAcquired {
+        space,
+        owner: new_owner,
+        turn,
+    });
+    check_monopoly(board, owner, space, new_owner, turn, monopolies);
+}
+
 /// Replays `result`'s event log once, reconstructing per-turn net worth,
 /// cash-flow categories, the property/monopoly timeline, bankruptcies, dice
 /// and landing distributions, and per-property ROI.
@@ -254,10 +277,9 @@ pub fn compute_stats(
     result: &GameResult,
 ) -> PerGameStats {
     let n = players.len();
-    let mut cash: Vec<i64> = vec![rules.starting_cash as i64; n];
+    let mut ledger = Ledger::new(board, n, rules.starting_cash);
     let mut bankrupt = vec![false; n];
     let mut owner: Vec<Option<usize>> = vec![None; BOARD_SIZE];
-    let mut houses: Vec<u8> = vec![0; BOARD_SIZE];
     let mut cash_flow = vec![CashFlowBreakdown::default(); n];
     let mut rent_collected = [0u32; BOARD_SIZE];
     let mut property_timeline = Vec::new();
@@ -278,7 +300,7 @@ pub fn compute_stats(
     while i < events.len() {
         let env = &events[i];
         if env.turn != current_turn {
-            net_worth_by_turn.push(net_worth_snapshot(board, n, &cash, &owner, &houses));
+            net_worth_by_turn.push(ledger.net_worth(&owner));
             current_turn = env.turn;
         }
         let mut skip = 0;
@@ -286,27 +308,22 @@ pub fn compute_stats(
             Event::RollDice { dice } => dice_roll_counts[(dice.0 + dice.1) as usize - 2] += 1,
             Event::Move { to, .. } => landing_counts[*to] += 1,
             Event::PassGo => {
-                cash[env.player] += rules.go_salary as i64;
+                ledger.cash[env.player] += rules.go_salary as i64;
                 cash_flow[env.player].go_salary_collected += rules.go_salary as i64;
             }
             Event::PropertyOffered { price, .. } => pending_offer_price = Some(*price),
             Event::PurchaseDecision { space, bought } => {
-                let price = pending_offer_price.take();
+                let offered = pending_offer_price.take();
                 if *bought {
-                    let price = price.unwrap_or_else(|| board.space(*space).price().unwrap_or(0));
-                    cash[env.player] -= price as i64;
-                    owner[*space] = Some(env.player);
-                    property_timeline.push(PropertyAcquired {
-                        space: *space,
-                        owner: env.player,
-                        turn: env.turn,
-                    });
-                    check_monopoly(
+                    let price = offered.unwrap_or_else(|| board.space(*space).price().unwrap_or(0));
+                    ledger.cash[env.player] -= price as i64;
+                    record_acquisition(
                         board,
-                        &owner,
+                        &mut owner,
                         *space,
                         env.player,
                         env.turn,
+                        &mut property_timeline,
                         &mut monopolies_completed,
                     );
                 }
@@ -316,67 +333,37 @@ pub fn compute_stats(
                 space,
                 amount,
             } => {
-                cash[*player] -= *amount as i64;
-                owner[*space] = Some(*player);
-                property_timeline.push(PropertyAcquired {
-                    space: *space,
-                    owner: *player,
-                    turn: env.turn,
-                });
-                check_monopoly(
+                ledger.cash[*player] -= *amount as i64;
+                record_acquisition(
                     board,
-                    &owner,
+                    &mut owner,
                     *space,
                     *player,
                     env.turn,
+                    &mut property_timeline,
                     &mut monopolies_completed,
                 );
             }
             Event::HouseBuilt { space } => {
                 let cost = board.space(*space).house_cost().unwrap_or(0);
-                cash[env.player] -= cost as i64;
-                houses[*space] = if houses[*space] == 4 {
-                    5
-                } else {
-                    houses[*space] + 1
-                };
+                ledger.cash[env.player] -= cost as i64;
+                ledger.houses[*space] += 1;
             }
             // A bare `HouseSold`/`Mortgaged` here (not consumed by
             // `apply_debt` below) is a voluntary sale via `decide_build`
             // rather than a forced raise-cash one via `decide_mortgage` —
-            // still a plain cash/house-count effect either way.
-            Event::HouseSold { space } => {
-                let cost = board.space(*space).house_cost().unwrap_or(0);
-                cash[env.player] += (cost / 2) as i64;
-                houses[*space] = if houses[*space] == 5 {
-                    4
-                } else {
-                    houses[*space].saturating_sub(1)
-                };
-            }
-            Event::Mortgaged { space } => {
-                let price = board.space(*space).price().unwrap_or(0);
-                cash[env.player] += (price / 2) as i64;
-            }
+            // still a plain credit either way.
+            Event::HouseSold { space } => ledger.credit_house_sale(env.player, *space),
+            Event::Mortgaged { space } => ledger.credit_mortgage(env.player, *space),
             Event::TaxPaid { amount, .. } => {
-                let outcome = Ledger {
-                    cash: &mut cash,
-                    houses: &mut houses,
-                    board,
-                }
-                .apply_debt(events, i + 1, env.player, *amount, None);
+                let outcome = ledger.apply_debt(events, i + 1, env.player, *amount, None);
                 skip = outcome.consumed;
                 if outcome.paid {
                     cash_flow[env.player].tax_paid += *amount as i64;
                 }
             }
             Event::RentPaid { to, amount, space } => {
-                let outcome = Ledger {
-                    cash: &mut cash,
-                    houses: &mut houses,
-                    board,
-                }
-                .apply_debt(events, i + 1, env.player, *amount, Some(*to));
+                let outcome = ledger.apply_debt(events, i + 1, env.player, *amount, Some(*to));
                 skip = outcome.consumed;
                 if outcome.paid {
                     cash_flow[env.player].rent_paid += *amount as i64;
@@ -388,59 +375,42 @@ pub fn compute_stats(
                 action: JailAction::PayFine,
                 ..
             } => {
-                skip = Ledger {
-                    cash: &mut cash,
-                    houses: &mut houses,
-                    board,
-                }
-                .apply_debt(events, i + 1, env.player, rules.jail_fine, None)
-                .consumed;
+                skip = ledger
+                    .apply_debt(events, i + 1, env.player, rules.jail_fine, None)
+                    .consumed;
             }
             Event::CardDrawn { effect, .. } => match effect {
                 CardEffect::CollectFromBank(amount) => {
-                    cash[env.player] += *amount as i64;
+                    ledger.cash[env.player] += *amount as i64;
                     cash_flow[env.player].card_net += *amount as i64;
                 }
                 CardEffect::PayBank(amount) => {
-                    let outcome = Ledger {
-                        cash: &mut cash,
-                        houses: &mut houses,
-                        board,
-                    }
-                    .apply_debt(events, i + 1, env.player, *amount, None);
+                    let outcome = ledger.apply_debt(events, i + 1, env.player, *amount, None);
                     skip = outcome.consumed;
                     if outcome.paid {
                         cash_flow[env.player].card_net -= *amount as i64;
                     }
                 }
                 CardEffect::CollectFromEachPlayer(amount) => {
-                    let mut offset = 1;
                     for (other, &is_bankrupt) in bankrupt.iter().enumerate() {
                         if other == env.player || is_bankrupt {
                             continue;
                         }
-                        let outcome = Ledger {
-                            cash: &mut cash,
-                            houses: &mut houses,
-                            board,
-                        }
-                        .apply_debt(
+                        let outcome = ledger.apply_debt(
                             events,
-                            i + offset,
+                            i + 1 + skip,
                             other,
                             *amount,
                             Some(env.player),
                         );
-                        offset += outcome.consumed;
+                        skip += outcome.consumed;
                         if outcome.paid {
                             cash_flow[env.player].card_net += *amount as i64;
                             cash_flow[other].card_net -= *amount as i64;
                         }
                     }
-                    skip = offset - 1;
                 }
                 CardEffect::PayEachPlayer(amount) => {
-                    let mut offset = 1;
                     for (other, &is_bankrupt) in bankrupt.iter().enumerate() {
                         if other == env.player || is_bankrupt {
                             continue;
@@ -452,25 +422,19 @@ pub fn compute_stats(
                         // because the payer was short, and the `Bankrupted`
                         // envelope sitting at the cursor ends the raise-cash
                         // run), which is what the engine's own `break` does.
-                        let outcome = Ledger {
-                            cash: &mut cash,
-                            houses: &mut houses,
-                            board,
-                        }
-                        .apply_debt(
+                        let outcome = ledger.apply_debt(
                             events,
-                            i + offset,
+                            i + 1 + skip,
                             env.player,
                             *amount,
                             Some(other),
                         );
-                        offset += outcome.consumed;
+                        skip += outcome.consumed;
                         if outcome.paid {
                             cash_flow[env.player].card_net -= *amount as i64;
                             cash_flow[other].card_net += *amount as i64;
                         }
                     }
-                    skip = offset - 1;
                 }
                 CardEffect::PropertyRepairAssessment { .. }
                 | CardEffect::AdvanceTo(_)
@@ -485,10 +449,10 @@ pub fn compute_stats(
                 // `apply_debt` already credited) goes to the actual payee;
                 // applied uniformly here regardless of which debt triggered
                 // it, matching `Game::bankrupt_player`.
-                let remaining = cash[env.player].max(0);
-                cash[env.player] = 0;
+                let remaining = ledger.cash[env.player].max(0);
+                ledger.cash[env.player] = 0;
                 if let Some(p) = payee {
-                    cash[*p] += remaining;
+                    ledger.cash[*p] += remaining;
                 }
                 bankrupt[env.player] = true;
                 bankruptcies.push(BankruptcyRecord {
@@ -500,7 +464,7 @@ pub fn compute_stats(
                     if owner[space] != Some(env.player) {
                         continue;
                     }
-                    houses[space] = 0;
+                    ledger.houses[space] = 0;
                     owner[space] = *payee;
                     if let Some(new_owner) = payee {
                         check_monopoly(
@@ -518,23 +482,15 @@ pub fn compute_stats(
         }
         i += 1 + skip;
     }
-    net_worth_by_turn.push(net_worth_snapshot(board, n, &cash, &owner, &houses));
+    net_worth_by_turn.push(ledger.net_worth(&owner));
 
     let property_roi = (0..BOARD_SIZE)
-        .filter_map(|space| {
-            let price = board.space(space).price()?;
-            let house_cost = board.space(space).house_cost().unwrap_or(0);
-            let increments = if houses[space] == 5 {
-                5
-            } else {
-                houses[space] as u32
-            };
-            Some(PropertyRoi {
-                space,
-                owner: owner[space],
-                rent_collected: rent_collected[space],
-                cost_basis: price + house_cost * increments,
-            })
+        .filter(|&space| board.space(space).price().is_some())
+        .map(|space| PropertyRoi {
+            space,
+            owner: owner[space],
+            rent_collected: rent_collected[space],
+            cost_basis: ledger.space_value(space),
         })
         .collect();
 
@@ -567,6 +523,16 @@ mod tests {
                 strategy: s.to_string(),
             })
             .collect()
+    }
+
+    /// A `Ledger` seeded with exact per-player cash, for the `apply_debt`
+    /// unit tests below.
+    fn ledger_with<'a>(board: &'a Board, cash: &[i64]) -> Ledger<'a> {
+        Ledger {
+            board,
+            cash: cash.to_vec(),
+            houses: vec![0; BOARD_SIZE],
+        }
     }
 
     #[test]
@@ -604,13 +570,11 @@ mod tests {
         let acquisitions = result
             .events
             .iter()
-            .filter(|e| matches!(e.event, Event::PurchaseDecision { bought: true, .. }))
-            .count()
-            + result
-                .events
-                .iter()
-                .filter(|e| matches!(e.event, Event::AuctionWon { .. }))
-                .count();
+            .filter(|e| {
+                matches!(e.event, Event::PurchaseDecision { bought: true, .. })
+                    || matches!(e.event, Event::AuctionWon { .. })
+            })
+            .count();
         assert_eq!(stats.property_timeline.len(), acquisitions);
         // Buy None never buys, so every acquired property ends up owned by
         // player 0, and its cost basis (list price plus any building
@@ -624,14 +588,12 @@ mod tests {
     }
 
     #[test]
-    fn net_worth_snapshot_matches_starting_cash_before_anything_happens() {
+    fn net_worth_matches_starting_cash_before_anything_happens() {
         let board = Board::standard();
         let rules = RuleSet::default();
-        let cash = vec![rules.starting_cash as i64; 2];
-        let owner = vec![None; BOARD_SIZE];
-        let houses = vec![0u8; BOARD_SIZE];
+        let ledger = Ledger::new(&board, 2, rules.starting_cash);
         assert_eq!(
-            net_worth_snapshot(&board, 2, &cash, &owner, &houses),
+            ledger.net_worth(&[None; BOARD_SIZE]),
             vec![rules.starting_cash, rules.starting_cash]
         );
     }
@@ -642,40 +604,28 @@ mod tests {
         // zeroing-and-transfer (uniformly, regardless of which debt
         // triggered it) — `apply_debt` just needs to not also subtract the
         // amount that was never actually paid.
-        let mut cash = vec![30i64, 500];
-        let mut houses = vec![0u8; BOARD_SIZE];
         let board = Board::standard();
+        let mut ledger = ledger_with(&board, &[30, 500]);
         let events = [EventEnvelope {
             turn: 1,
             player: 0,
             seq: 1,
             event: Event::Bankrupted { payee: Some(1) },
         }];
-        let outcome = Ledger {
-            cash: &mut cash,
-            houses: &mut houses,
-            board: &board,
-        }
-        .apply_debt(&events, 0, 0, 100, Some(1));
+        let outcome = ledger.apply_debt(&events, 0, 0, 100, Some(1));
         assert_eq!(outcome.consumed, 0); // no raise-cash events to skip; the caller visits Bankrupted itself
         assert!(!outcome.paid);
-        assert_eq!(cash, vec![30, 500]);
+        assert_eq!(ledger.cash, vec![30, 500]);
     }
 
     #[test]
     fn apply_debt_pays_in_full_when_no_bankruptcy_follows() {
-        let mut cash = vec![200i64, 500];
-        let mut houses = vec![0u8; BOARD_SIZE];
         let board = Board::standard();
-        let outcome = Ledger {
-            cash: &mut cash,
-            houses: &mut houses,
-            board: &board,
-        }
-        .apply_debt(&[], 0, 0, 100, Some(1));
+        let mut ledger = ledger_with(&board, &[200, 500]);
+        let outcome = ledger.apply_debt(&[], 0, 0, 100, Some(1));
         assert_eq!(outcome.consumed, 0);
         assert!(outcome.paid);
-        assert_eq!(cash, vec![100, 600]);
+        assert_eq!(ledger.cash, vec![100, 600]);
     }
 
     /// Regression: `CardEffect::PayEachPlayer` charges the same player once
@@ -685,9 +635,8 @@ mod tests {
     /// of those earlier payments.
     #[test]
     fn a_payment_before_a_later_bankruptcy_in_the_same_card_still_goes_through() {
-        let mut cash = vec![120i64, 0, 0, 0];
-        let mut houses = vec![0u8; BOARD_SIZE];
         let board = Board::standard();
+        let mut ledger = ledger_with(&board, &[120, 0, 0, 0]);
         // Player 0 draws "pay each player $50": pays 1 and 2, then can't pay
         // 3 and is bankrupted to them — with nothing between the card and
         // the `Bankrupted` envelope.
@@ -697,19 +646,14 @@ mod tests {
             seq: 1,
             event: Event::Bankrupted { payee: Some(3) },
         }];
-        let mut outcomes = Vec::new();
+        let mut paid = Vec::new();
         for payee in 1..4 {
-            let outcome = Ledger {
-                cash: &mut cash,
-                houses: &mut houses,
-                board: &board,
-            }
-            .apply_debt(&events, 0, 0, 50, Some(payee));
+            let outcome = ledger.apply_debt(&events, 0, 0, 50, Some(payee));
             assert_eq!(outcome.consumed, 0);
-            outcomes.push(outcome.paid);
+            paid.push(outcome.paid);
         }
-        assert_eq!(outcomes, vec![true, true, false]);
-        assert_eq!(cash, vec![20, 50, 50, 0]);
+        assert_eq!(paid, vec![true, true, false]);
+        assert_eq!(ledger.cash, vec![20, 50, 50, 0]);
     }
 
     /// The raise-cash run is consumed only up to the point the debt becomes
@@ -726,16 +670,10 @@ mod tests {
             event: Event::Mortgaged { space: 1 },
         };
         let events = [mortgage(1), mortgage(2), mortgage(3)];
-        let mut cash = vec![10i64, 0];
-        let mut houses = vec![0u8; BOARD_SIZE];
-        let outcome = Ledger {
-            cash: &mut cash,
-            houses: &mut houses,
-            board: &board,
-        }
-        .apply_debt(&events, 0, 0, 60, Some(1));
+        let mut ledger = ledger_with(&board, &[10, 0]);
+        let outcome = ledger.apply_debt(&events, 0, 0, 60, Some(1));
         assert!(outcome.paid);
         assert_eq!(outcome.consumed, 2); // 10 + 30 + 30 = 70 >= 60; the third is left behind
-        assert_eq!(cash, vec![10, 60]);
+        assert_eq!(ledger.cash, vec![10, 60]);
     }
 }

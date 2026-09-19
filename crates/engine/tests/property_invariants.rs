@@ -80,15 +80,13 @@ fn rule_set() -> impl Strategy<Value = RuleSet> {
 /// selling houses/mortgaging `payer`'s own properties (`raise_cash`) — so a
 /// `Bankrupted` event for `payer` isn't necessarily the *very* next envelope,
 /// it can follow a run of `payer`'s own `Mortgaged`/`HouseSold` events first.
-/// This applies those credits itself and reports how many envelopes after
-/// `start` it consumed, so the caller's cursor can skip straight past them —
-/// stopping *before* a trailing `Bankrupted` envelope, which the caller's own
-/// `Event::Bankrupted` handling applies uniformly regardless of which debt
-/// triggered it.
+/// This credits those itself, pays if and only if `payer` can then cover
+/// `amount` (the way the engine decides it), and returns how many envelopes
+/// after `start` it consumed so the caller's cursor can skip them. It stops
+/// *before* any trailing `Bankrupted` envelope, which the caller applies
+/// itself.
 ///
-/// Whether the debt went through is decided the way the engine decides it:
-/// raise cash only while `payer` still can't cover `amount`, then pay if and
-/// only if they now can. Simply looking ahead for a `Bankrupted` envelope
+/// Deciding "was this paid?" by looking ahead for that `Bankrupted` envelope
 /// would be wrong — `CardEffect::PayEachPlayer` charges the same player once
 /// per recipient, so an earlier recipient's *successful* payment can sit in
 /// the log directly before the charge that bankrupts them, with nothing in
@@ -102,30 +100,30 @@ fn settle(
     amount: u32,
     payee: Option<usize>,
 ) -> usize {
-    let mut peek = start;
+    let mut cursor = start;
     while cash[payer] < amount as i64 {
-        let Some(env) = events.get(peek) else { break };
+        let Some(env) = events.get(cursor) else { break };
         if env.player != payer {
             break;
         }
-        match &env.event {
+        match env.event {
             Event::Mortgaged { space } => {
-                cash[payer] += (board.space(*space).price().unwrap_or(0) / 2) as i64;
+                cash[payer] += (board.space(space).price().unwrap_or(0) / 2) as i64;
             }
             Event::HouseSold { space } => {
-                cash[payer] += (board.space(*space).house_cost().unwrap_or(0) / 2) as i64;
+                cash[payer] += (board.space(space).house_cost().unwrap_or(0) / 2) as i64;
             }
             _ => break,
         }
-        peek += 1;
+        cursor += 1;
     }
     if cash[payer] >= amount as i64 {
         cash[payer] -= amount as i64;
-        if let Some(p) = payee {
-            cash[p] += amount as i64;
+        if let Some(payee) = payee {
+            cash[payee] += amount as i64;
         }
     }
-    peek - start
+    cursor - start
 }
 
 /// Replays every cash-affecting event independently and returns the final
@@ -202,25 +200,22 @@ fn reconcile_final_cash(
                     skip = settle(&mut cash, board, events, i + 1, env.player, *amount, None);
                 }
                 CardEffect::CollectFromEachPlayer(amount) => {
-                    let mut offset = 1;
                     for (other, &is_bankrupt) in bankrupt.iter().enumerate() {
                         if other == env.player || is_bankrupt {
                             continue;
                         }
-                        offset += settle(
+                        skip += settle(
                             &mut cash,
                             board,
                             events,
-                            i + offset,
+                            i + 1 + skip,
                             other,
                             *amount,
                             Some(env.player),
                         );
                     }
-                    skip = offset - 1;
                 }
                 CardEffect::PayEachPlayer(amount) => {
-                    let mut offset = 1;
                     for (other, &is_bankrupt) in bankrupt.iter().enumerate() {
                         if other == env.player || is_bankrupt {
                             continue;
@@ -229,17 +224,16 @@ fn reconcile_final_cash(
                         // part-way through the card — `settle`'s own
                         // affordability check refuses every remaining
                         // recipient, which is what the engine's `break` does.
-                        offset += settle(
+                        skip += settle(
                             &mut cash,
                             board,
                             events,
-                            i + offset,
+                            i + 1 + skip,
                             env.player,
                             *amount,
                             Some(other),
                         );
                     }
-                    skip = offset - 1;
                 }
                 CardEffect::PropertyRepairAssessment { .. }
                 | CardEffect::AdvanceTo(_)
@@ -321,7 +315,7 @@ proptest! {
 
     /// Codifies both the Phase 2 bankruptcy-cash-loss bug and the Phase 3
     /// bankruptcy-mid-multi-payment bug (see `a_bankruptcy_part_way_through_
-    /// pay_each_player_still_pays_the_earlier_players` below for the pinned
+    /// pay_each_player_still_pays_the_earlier_players` above for the pinned
     /// regression) as a standing invariant: independently replaying every
     /// cash-affecting event must land on exactly the engine's own final cash
     /// for every player.

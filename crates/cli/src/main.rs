@@ -3,9 +3,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use monopoly_engine::{run_batch, BatchResult, Board, Game, GameConfig, GameResult, PlayerConfig};
+use monopoly_engine::{
+    compute_stats, run_batch, BatchResult, Board, Game, GameConfig, GameResult, PerGameStats,
+    PlayerConfig,
+};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use serde::Serialize;
 
 #[derive(Parser)]
 #[command(name = "monopoly", about = "Headless Monopoly simulator")]
@@ -50,15 +54,15 @@ enum Command {
     },
 }
 
-#[derive(serde::Serialize)]
+#[derive(Serialize)]
 struct RunOutputFile<'a> {
     seed: u64,
     #[serde(flatten)]
     result: &'a GameResult,
-    final_stats: monopoly_engine::PerGameStats,
+    final_stats: PerGameStats,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Serialize)]
 struct BatchOutputFile<'a> {
     base_seed: u64,
     #[serde(flatten)]
@@ -91,8 +95,7 @@ fn run(config_path: &Path, seed: Option<u64>, out: Option<&Path>) -> ExitCode {
     };
     let result = game.run_to_completion();
     let board = Board::standard();
-    let final_stats =
-        monopoly_engine::compute_stats(&board, &config.players, &config.rules, &result);
+    let final_stats = compute_stats(&board, &config.players, &config.rules, &result);
 
     match out {
         Some(path) => {
@@ -101,10 +104,8 @@ fn run(config_path: &Path, seed: Option<u64>, out: Option<&Path>) -> ExitCode {
                 result: &result,
                 final_stats,
             };
-            let json =
-                serde_json::to_string_pretty(&output).expect("GameResult is always serializable");
-            if let Err(e) = fs::write(path, json) {
-                return fail(&format!("writing {}: {e}", path.display()));
+            if let Err(e) = write_json(path, &output) {
+                return fail(&e);
             }
             println!(
                 "seed {seed}: wrote {} events to {}",
@@ -152,10 +153,8 @@ fn batch(
                 base_seed,
                 result: &result,
             };
-            let json =
-                serde_json::to_string_pretty(&output).expect("BatchResult is always serializable");
-            if let Err(e) = fs::write(path, json) {
-                return fail(&format!("writing {}: {e}", path.display()));
+            if let Err(e) = write_json(path, &output) {
+                return fail(&e);
             }
             println!(
                 "base seed {base_seed}: wrote {} games to {}",
@@ -183,12 +182,12 @@ fn load_config(path: &Path) -> Result<GameConfig, String> {
     }
 }
 
-fn print_summary(
-    seed: u64,
-    players: &[PlayerConfig],
-    result: &GameResult,
-    stats: &monopoly_engine::PerGameStats,
-) {
+fn write_json(path: &Path, output: &impl Serialize) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(output).expect("simulation output is serializable");
+    fs::write(path, json).map_err(|e| format!("writing {}: {e}", path.display()))
+}
+
+fn print_summary(seed: u64, players: &[PlayerConfig], result: &GameResult, stats: &PerGameStats) {
     println!("seed: {seed}");
     println!("turns: {}", result.turns);
     match result.winner {

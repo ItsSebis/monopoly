@@ -3,10 +3,9 @@
 //! (`docs/analysis-and-metrics.md`'s batch-only metrics). Per
 //! `docs/architecture.md`'s determinism-as-storage-optimization, only each
 //! game's `(seed, winner, turns)` summary survives the call — the full event
-//! log, and the bulk of `PerGameStats` (in particular `net_worth_by_turn`,
-//! one heap-allocated row per turn), are dropped as soon as the game's
-//! `GameContribution` is extracted, so peak memory stays proportional to the
-//! batch size, not to total turns played across it. Everything can always be
+//! log and the bulk of `PerGameStats` are dropped per game (see
+//! `GameContribution`), so peak memory stays proportional to the batch size
+//! rather than to total turns played across it, and anything dropped can be
 //! regenerated later from `(RuleSet, players, seed)`.
 
 use std::collections::BTreeMap;
@@ -46,7 +45,7 @@ impl DistributionSummary {
         if values.is_empty() {
             return DistributionSummary::default();
         }
-        values.sort_by(|a, b| a.partial_cmp(b).expect("net worth is never NaN"));
+        values.sort_by(f64::total_cmp);
         let percentile = |p: f64| values[(((values.len() - 1) as f64) * p).round() as usize];
         DistributionSummary {
             mean: values.iter().sum::<f64>() / values.len() as f64,
@@ -95,10 +94,10 @@ pub struct BatchResult {
 
 /// Everything `aggregate` needs from one game's `PerGameStats` — extracted
 /// immediately after `compute_stats` returns so the much larger
-/// `net_worth_by_turn` timeline (and the rest of `PerGameStats`) can be
-/// dropped before the next game runs, rather than retained for the whole
-/// batch. `O(1)`-ish in size (a handful of small counts/vecs), unlike
-/// `PerGameStats` which is `O(turns)`.
+/// `net_worth_by_turn` timeline (one heap-allocated row per turn) and the
+/// rest of `PerGameStats` can be dropped before the next game runs. Its size
+/// is bounded by the board and player count, unlike `PerGameStats`, which is
+/// `O(turns)`.
 struct GameContribution {
     dice_roll_counts: [u64; 11],
     landing_counts: Vec<u64>,
@@ -106,6 +105,20 @@ struct GameContribution {
     property_roi: Vec<PropertyRoi>,
     /// The last `net_worth_by_turn` row — final net worth per player.
     final_net_worth: Vec<u32>,
+}
+
+/// A numerator/denominator pair folded across the batch, one entry per
+/// strategy: wins over seats played, and rent collected over cost basis.
+#[derive(Debug, Clone, Copy, Default)]
+struct Ratio {
+    numerator: f64,
+    denominator: f64,
+}
+
+impl Ratio {
+    fn rate(self) -> f64 {
+        self.numerator / self.denominator
+    }
 }
 
 /// Runs one full game per seed, in parallel, and folds each into a shared
@@ -140,8 +153,6 @@ pub fn run_batch(
                 property_roi: stats.property_roi,
                 final_net_worth: stats.net_worth_by_turn.last().cloned().unwrap_or_default(),
             };
-            // `stats` (and its O(turns) `net_worth_by_turn`) is dropped here,
-            // before this closure returns — not retained for the batch.
             (summary, contribution)
         })
         .collect();
@@ -161,11 +172,9 @@ fn aggregate(
     let n = players.len();
     let strategies: Vec<&str> = players.iter().map(|p| p.strategy.as_str()).collect();
 
-    let mut wins: BTreeMap<String, u32> = BTreeMap::new();
-    let mut totals: BTreeMap<String, u32> = BTreeMap::new();
+    let mut win_rates: BTreeMap<String, Ratio> = BTreeMap::new();
     let mut head_to_head: BTreeMap<String, BTreeMap<String, HeadToHead>> = BTreeMap::new();
-    let mut roi_numerator: BTreeMap<String, f64> = BTreeMap::new();
-    let mut roi_denominator: BTreeMap<String, f64> = BTreeMap::new();
+    let mut rois: BTreeMap<String, Ratio> = BTreeMap::new();
     let mut game_length = Vec::with_capacity(per_game.len());
     let mut bankruptcy_turns = Vec::new();
     let mut dice_roll_counts = [0u64; 11];
@@ -187,9 +196,9 @@ fn aggregate(
 
         for roi in &contribution.property_roi {
             if let Some(owner) = roi.owner {
-                let strategy = strategies[owner].to_string();
-                *roi_numerator.entry(strategy.clone()).or_default() += roi.rent_collected as f64;
-                *roi_denominator.entry(strategy).or_default() += roi.cost_basis.max(1) as f64;
+                let entry = rois.entry(strategies[owner].to_string()).or_default();
+                entry.numerator += roi.rent_collected as f64;
+                entry.denominator += roi.cost_basis.max(1) as f64;
             }
         }
 
@@ -201,9 +210,10 @@ fn aggregate(
         }
 
         for (player, strategy) in strategies.iter().enumerate() {
-            *totals.entry(strategy.to_string()).or_default() += 1;
+            let entry = win_rates.entry(strategy.to_string()).or_default();
+            entry.denominator += 1.0;
             if summary.winner == Some(player) {
-                *wins.entry(strategy.to_string()).or_default() += 1;
+                entry.numerator += 1.0;
             }
         }
 
@@ -231,20 +241,14 @@ fn aggregate(
         }
     }
 
-    let win_rate_by_strategy = totals
-        .iter()
-        .map(|(strategy, &total)| {
-            let w = wins.get(strategy).copied().unwrap_or(0);
-            (strategy.clone(), w as f64 / total as f64)
-        })
+    let win_rate_by_strategy = win_rates
+        .into_iter()
+        .map(|(strategy, ratio)| (strategy, ratio.rate()))
         .collect();
 
-    let roi_by_strategy = roi_denominator
-        .iter()
-        .map(|(strategy, &denominator)| {
-            let numerator = roi_numerator.get(strategy).copied().unwrap_or(0.0);
-            (strategy.clone(), numerator / denominator)
-        })
+    let roi_by_strategy = rois
+        .into_iter()
+        .map(|(strategy, ratio)| (strategy, ratio.rate()))
         .collect();
 
     let final_net_worth_by_strategy = final_net_worth

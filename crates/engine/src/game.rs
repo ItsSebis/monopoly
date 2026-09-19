@@ -99,9 +99,10 @@ impl Game {
         while !self.is_over() && self.state.turn < SAFETY_MAX_TURNS {
             self.step_turn();
         }
-        let winner = (self.state.active_player_count() == 1)
-            .then(|| self.state.players.iter().position(|p| !p.bankrupt))
-            .flatten();
+        let winner = match self.state.active_player_count() {
+            1 => self.state.players.iter().position(|p| !p.bankrupt),
+            _ => None,
+        };
         let turns = self.state.turn;
         // Attribute the closing event to the winner when there is one: if the
         // game ended by the *current* player's own bankruptcy, `current_player`
@@ -139,6 +140,18 @@ impl Game {
         }
     }
 
+    /// A player's strategy alongside a view of the rest of the game. Split
+    /// field-by-field rather than going through `self.view()`, which would
+    /// borrow all of `self` — including the strategy being called.
+    fn strategy_and_view(&mut self, player: usize) -> (&mut dyn Strategy, GameView<'_>) {
+        let view = GameView {
+            board: &self.board,
+            rules: &self.rules,
+            state: &self.state,
+        };
+        (self.strategies[player].as_mut(), view)
+    }
+
     /// Advances the game by exactly one player's turn (which may itself
     /// include multiple dice rolls on doubles) and returns the events that
     /// turn produced. See docs/simulation-engine.md's turn state machine.
@@ -150,12 +163,13 @@ impl Game {
         let player = self.state.current_player;
 
         if !self.state.players[player].bankrupt {
-            let mut takes_normal_turn = true;
-            if self.state.players[player].in_jail {
-                takes_normal_turn = self.resolve_jail_start_of_turn(player)
+            let takes_normal_turn = if self.state.players[player].in_jail {
+                self.resolve_jail_start_of_turn(player)
                     && !self.state.players[player].bankrupt
-                    && !self.state.players[player].in_jail;
-            }
+                    && !self.state.players[player].in_jail
+            } else {
+                true
+            };
             if takes_normal_turn {
                 self.run_dice_loop(player);
             }
@@ -168,22 +182,17 @@ impl Game {
     fn run_dice_loop(&mut self, player: usize) {
         let mut doubles_in_a_row = 0u8;
         loop {
-            let dice = self.roll_dice(player);
-            doubles_in_a_row = if dice.0 == dice.1 {
-                doubles_in_a_row + 1
-            } else {
-                0
-            };
+            let (first, second) = self.roll_dice(player);
+            let is_double = first == second;
+            doubles_in_a_row = if is_double { doubles_in_a_row + 1 } else { 0 };
             if doubles_in_a_row == 3 {
                 self.send_to_jail(player, JailReason::ThreeDoubles);
                 break;
             }
-            self.move_player(player, dice.0 + dice.1);
-            self.resolve_landing(player, dice.0 + dice.1);
-            if self.state.players[player].bankrupt
-                || self.state.players[player].in_jail
-                || dice.0 != dice.1
-            {
+            self.move_player(player, first + second);
+            self.resolve_landing(player, first + second);
+            let player_state = &self.state.players[player];
+            if player_state.bankrupt || player_state.in_jail || !is_double {
                 break;
             }
         }
@@ -270,6 +279,12 @@ impl Game {
         self.record(player, Event::JailExited);
     }
 
+    fn exit_jail_and_move(&mut self, player: usize, dice_total: u8) {
+        self.exit_jail(player);
+        self.move_player(player, dice_total);
+        self.resolve_landing(player, dice_total);
+    }
+
     /// Pays the jail fine; returns false if that payment bankrupted the
     /// player (in which case they're out of the game, not just out of jail).
     fn pay_jail_fine(&mut self, player: usize) -> bool {
@@ -287,15 +302,8 @@ impl Game {
     /// call, since neither a successful escape roll nor the forced
     /// third-attempt move grants the usual "doubles = go again" bonus).
     fn resolve_jail_start_of_turn(&mut self, player: usize) -> bool {
-        // Constructed inline (not via `self.view()`) so this only borrows
-        // board/rules/state, leaving `self.strategies` free to borrow
-        // mutably on the next line.
-        let view = GameView {
-            board: &self.board,
-            rules: &self.rules,
-            state: &self.state,
-        };
-        let action = self.strategies[player].decide_jail_action(&view, player);
+        let (strategy, view) = self.strategy_and_view(player);
+        let action = strategy.decide_jail_action(&view, player);
         self.record(
             player,
             Event::JailDecision {
@@ -314,11 +322,9 @@ impl Game {
             }
             JailAction::RollForDoubles => {
                 let is_third_attempt = self.state.players[player].jail_turns >= 2;
-                let dice = self.roll_dice(player);
-                if dice.0 == dice.1 {
-                    self.exit_jail(player);
-                    self.move_player(player, dice.0 + dice.1);
-                    self.resolve_landing(player, dice.0 + dice.1);
+                let (first, second) = self.roll_dice(player);
+                if first == second {
+                    self.exit_jail_and_move(player, first + second);
                 } else if is_third_attempt {
                     self.record(
                         player,
@@ -330,9 +336,7 @@ impl Game {
                     if !self.pay_jail_fine(player) {
                         return false;
                     }
-                    self.exit_jail(player);
-                    self.move_player(player, dice.0 + dice.1);
-                    self.resolve_landing(player, dice.0 + dice.1);
+                    self.exit_jail_and_move(player, first + second);
                 } else {
                     self.state.players[player].jail_turns += 1;
                 }
@@ -349,26 +353,9 @@ impl Game {
             }
             SpaceKind::IncomeTax => {
                 let amount = self.income_tax_due(player);
-                self.charge(player, amount, None);
-                self.record(
-                    player,
-                    Event::TaxPaid {
-                        amount,
-                        kind: TaxKind::Income,
-                    },
-                );
+                self.charge_tax(player, amount, TaxKind::Income);
             }
-            SpaceKind::LuxuryTax => {
-                let amount = self.rules.luxury_tax;
-                self.charge(player, amount, None);
-                self.record(
-                    player,
-                    Event::TaxPaid {
-                        amount,
-                        kind: TaxKind::Luxury,
-                    },
-                );
-            }
+            SpaceKind::LuxuryTax => self.charge_tax(player, self.rules.luxury_tax, TaxKind::Luxury),
             SpaceKind::GoToJail => self.send_to_jail(player, JailReason::GoToJailSpace),
             // No effect yet: Free Parking has no pot in the baseline rules,
             // Chance/Community Chest decks are a documented Phase 2 stub
@@ -383,6 +370,11 @@ impl Game {
         }
     }
 
+    fn charge_tax(&mut self, player: usize, amount: u32, kind: TaxKind) {
+        self.charge(player, amount, None);
+        self.record(player, Event::TaxPaid { amount, kind });
+    }
+
     fn resolve_ownable_landing(&mut self, player: usize, space: usize, dice_total: u8) {
         match self.state.owners[space] {
             None => {
@@ -392,16 +384,9 @@ impl Game {
                     .price()
                     .expect("ownable space has a price");
                 self.record(player, Event::PropertyOffered { space, price });
-                let view = GameView {
-                    board: &self.board,
-                    rules: &self.rules,
-                    state: &self.state,
-                };
-                let wants_to_buy = self.strategies[player].decide_purchase(
-                    &view,
-                    player,
-                    &PurchaseOffer { space, price },
-                );
+                let offer = PurchaseOffer { space, price };
+                let (strategy, view) = self.strategy_and_view(player);
+                let wants_to_buy = strategy.decide_purchase(&view, player, &offer);
                 let bought = wants_to_buy && self.state.players[player].cash >= price as i64;
                 if bought {
                     self.state.players[player].cash -= price as i64;
@@ -469,18 +454,15 @@ mod tests {
         let players = two_players();
         for seed in 0..50_000u64 {
             let mut game = Game::new(RuleSet::default(), &players, seed).unwrap();
-            let (doubles_rolled, moves_made) = {
-                let events = game.step_turn();
-                let doubles = events
-                    .iter()
-                    .filter(|e| matches!(e.event, Event::RollDice { dice } if dice.0 == dice.1))
-                    .count();
-                let moves = events
-                    .iter()
-                    .filter(|e| matches!(e.event, Event::Move { .. }))
-                    .count();
-                (doubles, moves)
-            };
+            let events = game.step_turn();
+            let doubles_rolled = events
+                .iter()
+                .filter(|e| matches!(e.event, Event::RollDice { dice } if dice.0 == dice.1))
+                .count();
+            let moves_made = events
+                .iter()
+                .filter(|e| matches!(e.event, Event::Move { .. }))
+                .count();
             if doubles_rolled == 3 {
                 assert!(
                     game.state.players[0].in_jail,

@@ -1,5 +1,6 @@
+use super::patient_jail_action;
 use crate::state::GameView;
-use crate::strategy::{patient_jail_action, JailAction, PurchaseOffer, Strategy};
+use crate::strategy::{JailAction, PurchaseOffer, Strategy};
 
 /// Never buys; used as a floor-line control. Jail decisions still use Buy
 /// Good's logic, since jail behavior isn't tied to ownership.

@@ -1,4 +1,4 @@
-use crate::board::{Board, ColorGroup, SpaceKind, BOARD_SIZE, RAILROAD_SPACES, UTILITY_SPACES};
+use crate::board::{Board, ColorGroup, BOARD_SIZE, RAILROAD_SPACES, UTILITY_SPACES};
 use crate::rules::RuleSet;
 use serde::Serialize;
 
@@ -44,7 +44,7 @@ pub struct GameState {
 }
 
 impl GameState {
-    pub fn new(rules: &RuleSet, names: &[String]) -> Self {
+    pub(crate) fn new(rules: &RuleSet, names: &[String]) -> Self {
         GameState {
             turn: 0,
             current_player: 0,
@@ -69,7 +69,7 @@ pub struct GameView<'a> {
     pub state: &'a GameState,
 }
 
-impl<'a> GameView<'a> {
+impl GameView<'_> {
     pub fn player(&self, index: usize) -> &PlayerState {
         &self.state.players[index]
     }
@@ -109,12 +109,5 @@ impl<'a> GameView<'a> {
             .filter_map(|s| self.board.space(s).price())
             .sum();
         cash + properties
-    }
-
-    pub fn color_group_of(&self, space: usize) -> Option<ColorGroup> {
-        match self.board.space(space) {
-            SpaceKind::Street { group, .. } => Some(group),
-            _ => None,
-        }
     }
 }

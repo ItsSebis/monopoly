@@ -34,6 +34,20 @@ pub enum ColorGroup {
     DarkBlue,
 }
 
+impl ColorGroup {
+    /// Every group, in `GROUP_MEMBERS` row order.
+    pub const ALL: [ColorGroup; 8] = [
+        ColorGroup::Brown,
+        ColorGroup::LightBlue,
+        ColorGroup::Pink,
+        ColorGroup::Orange,
+        ColorGroup::Red,
+        ColorGroup::Yellow,
+        ColorGroup::Green,
+        ColorGroup::DarkBlue,
+    ];
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpaceKind {
     Go,
@@ -58,20 +72,12 @@ pub enum SpaceKind {
 }
 
 impl SpaceKind {
-    /// Whether this space can ever be owned by a player.
-    pub fn is_ownable(&self) -> bool {
-        matches!(
-            self,
-            SpaceKind::Street { .. } | SpaceKind::Railroad { .. } | SpaceKind::Utility { .. }
-        )
-    }
-
     /// The bank purchase price, for ownable spaces.
     pub fn price(&self) -> Option<u32> {
         match self {
-            SpaceKind::Street { price, .. } => Some(*price),
-            SpaceKind::Railroad { price } => Some(*price),
-            SpaceKind::Utility { price } => Some(*price),
+            SpaceKind::Street { price, .. }
+            | SpaceKind::Railroad { price }
+            | SpaceKind::Utility { price } => Some(*price),
             _ => None,
         }
     }
@@ -242,17 +248,7 @@ mod tests {
     #[test]
     fn group_members_match_the_board() {
         let board = Board::standard();
-        let groups = [
-            ColorGroup::Brown,
-            ColorGroup::LightBlue,
-            ColorGroup::Pink,
-            ColorGroup::Orange,
-            ColorGroup::Red,
-            ColorGroup::Yellow,
-            ColorGroup::Green,
-            ColorGroup::DarkBlue,
-        ];
-        for (i, group) in groups.into_iter().enumerate() {
+        for (i, group) in ColorGroup::ALL.into_iter().enumerate() {
             assert_eq!(
                 group as usize, i,
                 "ColorGroup order must match GROUP_MEMBERS row order"

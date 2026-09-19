@@ -28,6 +28,13 @@ enum Command {
     },
 }
 
+#[derive(serde::Serialize)]
+struct OutputFile<'a> {
+    seed: u64,
+    #[serde(flatten)]
+    result: &'a GameResult,
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Run { config, seed, out } => run(&config, seed, out.as_deref()),
@@ -73,13 +80,6 @@ fn run(config_path: &Path, seed: Option<u64>, out: Option<&Path>) -> ExitCode {
 fn fail(message: &str) -> ExitCode {
     eprintln!("error: {message}");
     ExitCode::FAILURE
-}
-
-#[derive(serde::Serialize)]
-struct OutputFile<'a> {
-    seed: u64,
-    #[serde(flatten)]
-    result: &'a GameResult,
 }
 
 fn load_config(path: &Path) -> Result<GameConfig, String> {

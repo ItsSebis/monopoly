@@ -1,6 +1,7 @@
+use super::patient_jail_action;
 use crate::board::SpaceKind;
 use crate::state::GameView;
-use crate::strategy::{patient_jail_action, JailAction, PurchaseOffer, Strategy};
+use crate::strategy::{JailAction, PurchaseOffer, Strategy};
 
 /// Cash reserve required after a purchase.
 const RESERVE: i64 = 150;
@@ -25,17 +26,16 @@ impl Strategy for BuyGood {
                 base_rent,
                 price,
             } => {
-                let ratio = base_rent as f64 / price as f64;
                 let completes_monopoly = view
                     .board
                     .group_members(group)
                     .all(|s| s == offer.space || view.owner_of(s) == Some(player));
-                ratio
-                    + if completes_monopoly {
-                        MONOPOLY_BONUS
-                    } else {
-                        0.0
-                    }
+                let bonus = if completes_monopoly {
+                    MONOPOLY_BONUS
+                } else {
+                    0.0
+                };
+                base_rent as f64 / price as f64 + bonus
             }
             // Railroads/utilities have no fixed base rent (it scales with how
             // many the buyer ends up holding), so they're valued as a steady,

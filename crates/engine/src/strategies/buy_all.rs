@@ -5,6 +5,8 @@ use crate::strategy::{JailAction, PurchaseOffer, Strategy};
 /// committed to accumulating property (see docs/player-strategies.md).
 const RESERVE: i64 = 50;
 
+/// Buys every property it can still afford, and pays its way out of jail
+/// whenever it can — see docs/player-strategies.md.
 #[derive(Debug, Default)]
 pub struct BuyAll;
 

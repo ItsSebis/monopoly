@@ -2,7 +2,7 @@
 //! math, the jail/doubles state machine, bankruptcy) live as `#[cfg(test)]`
 //! unit tests alongside the code they cover — see docs/testing-and-validation.md.
 
-use monopoly_engine::{ConfigError, Game, PlayerConfig, RuleSet};
+use monopoly_engine::{ConfigError, Game, GameResult, PlayerConfig, RuleSet};
 
 fn players(strategies: &[(&str, &str)]) -> Vec<PlayerConfig> {
     strategies
@@ -12,6 +12,11 @@ fn players(strategies: &[(&str, &str)]) -> Vec<PlayerConfig> {
             strategy: (*strategy).into(),
         })
         .collect()
+}
+
+fn run(players: &[PlayerConfig], seed: u64) -> GameResult {
+    let mut game = Game::new(RuleSet::default(), players, seed).unwrap();
+    game.run_to_completion()
 }
 
 /// Without house-building (Phase 1's scope), base rents are small enough
@@ -31,8 +36,7 @@ fn players(strategies: &[(&str, &str)]) -> Vec<PlayerConfig> {
 fn buy_all_vs_buy_none_reliably_terminates_quickly() {
     let config = players(&[("Greedy", "buy_all"), ("Passive", "buy_none")]);
     for seed in 0..20u64 {
-        let mut game = Game::new(RuleSet::default(), &config, seed).unwrap();
-        let result = game.run_to_completion();
+        let result = run(&config, seed);
         assert!(
             result.winner.is_some(),
             "seed {seed}: expected a sole survivor well within the safety cap"
@@ -48,12 +52,8 @@ fn buy_all_vs_buy_none_reliably_terminates_quickly() {
 #[test]
 fn the_same_seed_always_produces_the_same_game() {
     let config = players(&[("A", "buy_good"), ("B", "buy_all"), ("C", "buy_bad")]);
-    let run = |seed| {
-        let mut game = Game::new(RuleSet::default(), &config, seed).unwrap();
-        game.run_to_completion()
-    };
-    let a = run(1234);
-    let b = run(1234);
+    let a = run(&config, 1234);
+    let b = run(&config, 1234);
     assert_eq!(a.turns, b.turns);
     assert_eq!(a.winner, b.winner);
     assert_eq!(
@@ -65,12 +65,8 @@ fn the_same_seed_always_produces_the_same_game() {
 #[test]
 fn different_seeds_can_produce_different_games() {
     let config = players(&[("A", "buy_good"), ("B", "buy_all")]);
-    let run = |seed| {
-        let mut game = Game::new(RuleSet::default(), &config, seed).unwrap();
-        game.run_to_completion()
-    };
-    let a = run(1);
-    let b = run(2);
+    let a = run(&config, 1);
+    let b = run(&config, 2);
     assert_ne!(
         serde_json::to_string(&a.events).unwrap(),
         serde_json::to_string(&b.events).unwrap(),

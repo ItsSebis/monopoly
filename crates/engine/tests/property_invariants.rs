@@ -1,0 +1,328 @@
+//! Property-based invariants (`docs/testing-and-validation.md`) that must
+//! hold for *any* valid `(RuleSet, players, seed)`, now that there's enough
+//! rule interaction (houses, mortgages, cards, auctions, bankruptcy-to-player)
+//! to make fuzzing worthwhile.
+//!
+//! `reconcile_final_cash` deliberately does **not** reuse
+//! `monopoly_engine::stats`'s event reducer, even though the two are
+//! structurally similar — the point of this test is independent
+//! verification, so a bug shared between the production code and its check
+//! would otherwise go undetected.
+
+use monopoly_engine::board::{Board, BOARD_SIZE};
+use monopoly_engine::state::{STARTING_HOTELS, STARTING_HOUSES};
+use monopoly_engine::{
+    CardEffect, Event, EventEnvelope, Game, IncomeTaxMode, JailAction, PlayerConfig, RuleSet,
+};
+use proptest::prelude::*;
+
+const STRATEGY_IDS: [&str; 4] = ["buy_all", "buy_good", "buy_bad", "buy_none"];
+
+fn player_config() -> impl Strategy<Value = PlayerConfig> {
+    proptest::sample::select(&STRATEGY_IDS[..]).prop_map(|s| PlayerConfig {
+        name: s.to_string(),
+        strategy: s.to_string(),
+    })
+}
+
+fn players_config() -> impl Strategy<Value = Vec<PlayerConfig>> {
+    proptest::collection::vec(player_config(), 2..=4)
+}
+
+/// `max_turns` is fixed and small so every generated game runs fast — this
+/// is what the bounded-termination invariant below actually exercises, and
+/// what keeps the whole suite quick despite fuzzing many games.
+/// `free_parking_pot` is left off: its payout isn't independently
+/// event-logged (see `monopoly_engine::stats`'s module doc comment), so
+/// reconciling it here would mean mirroring internal bookkeeping rather than
+/// replaying events — out of scope for this event-log-only check.
+fn rule_set() -> impl Strategy<Value = RuleSet> {
+    (
+        500u32..3000,
+        50u32..400,
+        10u32..100,
+        10u32..150,
+        any::<bool>(),
+        any::<bool>(),
+        0u8..3,
+    )
+        .prop_map(
+            |(
+                starting_cash,
+                go_salary,
+                jail_fine,
+                luxury_tax,
+                even_build_rule,
+                auction_on_decline,
+                tax_mode,
+            )| {
+                let income_tax_mode = match tax_mode {
+                    0 => IncomeTaxMode::Flat { amount: 200 },
+                    1 => IncomeTaxMode::Percentage { rate: 0.1 },
+                    _ => IncomeTaxMode::Choice { flat_amount: 200 },
+                };
+                RuleSet {
+                    starting_cash,
+                    go_salary,
+                    jail_fine,
+                    luxury_tax,
+                    income_tax_mode,
+                    even_build_rule,
+                    auction_on_decline,
+                    free_parking_pot: false,
+                    max_turns: Some(300),
+                }
+            },
+        )
+}
+
+/// `payer` owes `amount`. Before failing, the engine tries to raise cash by
+/// selling houses/mortgaging `payer`'s own properties (`raise_cash`) — so a
+/// `Bankrupted` event for `payer` isn't necessarily the *very* next envelope,
+/// it can follow a run of `payer`'s own `Mortgaged`/`HouseSold` events first.
+/// This applies those credits itself and reports how many envelopes after
+/// `start` it consumed, so the caller's cursor can skip straight past them —
+/// stopping *before* a trailing `Bankrupted` envelope, which the caller's own
+/// `Event::Bankrupted` handling applies uniformly regardless of which debt
+/// triggered it. If no bankruptcy follows the raise-cash run, the debt is
+/// paid in full here.
+fn settle(
+    cash: &mut [i64],
+    board: &Board,
+    events: &[EventEnvelope],
+    start: usize,
+    payer: usize,
+    amount: u32,
+    payee: Option<usize>,
+) -> usize {
+    let mut peek = start;
+    while let Some(env) = events.get(peek) {
+        if env.player != payer {
+            break;
+        }
+        match &env.event {
+            Event::Mortgaged { space } => {
+                cash[payer] += (board.space(*space).price().unwrap_or(0) / 2) as i64;
+            }
+            Event::HouseSold { space } => {
+                cash[payer] += (board.space(*space).house_cost().unwrap_or(0) / 2) as i64;
+            }
+            _ => break,
+        }
+        peek += 1;
+    }
+    let consumed = peek - start;
+    let bankruptcy_follows = matches!(
+        events.get(peek),
+        Some(env) if env.player == payer && matches!(env.event, Event::Bankrupted { .. })
+    );
+    if !bankruptcy_follows {
+        cash[payer] -= amount as i64;
+        if let Some(p) = payee {
+            cash[p] += amount as i64;
+        }
+    }
+    consumed
+}
+
+/// Replays every cash-affecting event independently and returns the final
+/// cash it implies for each player. Walks the log with an explicit cursor
+/// (rather than a plain iteration) because `settle` above can consume more
+/// than one envelope per debt. None of the built-in strategies ever sell a
+/// house *outside* the raise-cash flow (only `decide_mortgage`'s
+/// `SellHouse`, never `decide_build`'s, is ever produced — see
+/// `crates/engine/src/strategies/mod.rs`), so every `Mortgaged`/`HouseSold`
+/// envelope is always consumed by `settle` above and never seen bare here.
+fn reconcile_final_cash(
+    board: &Board,
+    rules: &RuleSet,
+    n: usize,
+    events: &[EventEnvelope],
+) -> Vec<i64> {
+    let mut cash = vec![rules.starting_cash as i64; n];
+    let mut bankrupt = vec![false; n];
+    let mut pending_offer_price: Option<u32> = None;
+
+    let mut i = 0;
+    while i < events.len() {
+        let env = &events[i];
+        let mut skip = 0;
+        match &env.event {
+            Event::PassGo => cash[env.player] += rules.go_salary as i64,
+            Event::PropertyOffered { price, .. } => pending_offer_price = Some(*price),
+            Event::PurchaseDecision { bought, .. } => {
+                let price = pending_offer_price.take();
+                if *bought {
+                    cash[env.player] -= price.unwrap_or(0) as i64;
+                }
+            }
+            Event::AuctionWon { player, amount, .. } => cash[*player] -= *amount as i64,
+            Event::HouseBuilt { space } => {
+                cash[env.player] -= board.space(*space).house_cost().unwrap_or(0) as i64;
+            }
+            Event::TaxPaid { amount, .. } => {
+                skip = settle(&mut cash, board, events, i + 1, env.player, *amount, None);
+            }
+            Event::RentPaid { to, amount, .. } => {
+                skip = settle(
+                    &mut cash,
+                    board,
+                    events,
+                    i + 1,
+                    env.player,
+                    *amount,
+                    Some(*to),
+                );
+            }
+            Event::JailDecision {
+                action: JailAction::PayFine,
+                ..
+            } => {
+                skip = settle(
+                    &mut cash,
+                    board,
+                    events,
+                    i + 1,
+                    env.player,
+                    rules.jail_fine,
+                    None,
+                );
+            }
+            Event::CardDrawn { effect, .. } => match effect {
+                CardEffect::CollectFromBank(amount) => cash[env.player] += *amount as i64,
+                CardEffect::PayBank(amount) => {
+                    skip = settle(&mut cash, board, events, i + 1, env.player, *amount, None);
+                }
+                CardEffect::CollectFromEachPlayer(amount) => {
+                    let mut offset = 1;
+                    for (other, &is_bankrupt) in bankrupt.iter().enumerate() {
+                        if other == env.player || is_bankrupt {
+                            continue;
+                        }
+                        offset += settle(
+                            &mut cash,
+                            board,
+                            events,
+                            i + offset,
+                            other,
+                            *amount,
+                            Some(env.player),
+                        );
+                    }
+                    skip = offset - 1;
+                }
+                CardEffect::PayEachPlayer(amount) => {
+                    let mut offset = 1;
+                    for (other, &is_bankrupt) in bankrupt.iter().enumerate() {
+                        if bankrupt[env.player] {
+                            break;
+                        }
+                        if other == env.player || is_bankrupt {
+                            continue;
+                        }
+                        offset += settle(
+                            &mut cash,
+                            board,
+                            events,
+                            i + offset,
+                            env.player,
+                            *amount,
+                            Some(other),
+                        );
+                    }
+                    skip = offset - 1;
+                }
+                CardEffect::PropertyRepairAssessment { .. }
+                | CardEffect::AdvanceTo(_)
+                | CardEffect::AdvanceToNearestRailroad
+                | CardEffect::AdvanceToNearestUtility
+                | CardEffect::GoBackThreeSpaces
+                | CardEffect::GoToJail
+                | CardEffect::GetOutOfJailFree => {}
+            },
+            Event::Bankrupted { payee } => {
+                let remaining = cash[env.player].max(0);
+                cash[env.player] = 0;
+                if let Some(p) = payee {
+                    cash[*p] += remaining;
+                }
+                bankrupt[env.player] = true;
+            }
+            _ => {}
+        }
+        i += 1 + skip;
+    }
+    cash
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    /// The shape of bug Phase 2's review caught (bankruptcy silently
+    /// destroying a debtor's remaining cash instead of handing it to the
+    /// creditor), codified as a standing invariant: independently replaying
+    /// every cash-affecting event must land on exactly the engine's own
+    /// final cash for every player.
+    #[test]
+    fn cash_reconciles_against_the_full_event_log(
+        rules in rule_set(),
+        players in players_config(),
+        seed in any::<u64>(),
+    ) {
+        let board = Board::standard();
+        let mut game = Game::new(rules.clone(), &players, seed).unwrap();
+        let result = game.run_to_completion();
+        let reconciled = reconcile_final_cash(&board, &rules, players.len(), &result.events);
+        for (i, player) in result.final_state.players.iter().enumerate() {
+            prop_assert_eq!(reconciled[i], player.cash, "player {}", i);
+        }
+    }
+
+    #[test]
+    fn bank_house_and_hotel_supply_always_balances(
+        rules in rule_set(),
+        players in players_config(),
+        seed in any::<u64>(),
+    ) {
+        let mut game = Game::new(rules, &players, seed).unwrap();
+        let result = game.run_to_completion();
+        let state = &result.final_state;
+
+        let houses_in_play: u32 = state.properties.iter().map(|p| if p.houses < 5 { p.houses as u32 } else { 0 }).sum();
+        let hotels_in_play: u32 = state.properties.iter().filter(|p| p.houses == 5).count() as u32;
+
+        prop_assert_eq!(state.bank_houses_remaining as u32 + houses_in_play, STARTING_HOUSES as u32);
+        prop_assert_eq!(state.bank_hotels_remaining as u32 + hotels_in_play, STARTING_HOTELS as u32);
+    }
+
+    #[test]
+    fn every_owned_property_belongs_to_a_valid_non_bankrupt_player(
+        rules in rule_set(),
+        players in players_config(),
+        seed in any::<u64>(),
+    ) {
+        let n = players.len();
+        let mut game = Game::new(rules, &players, seed).unwrap();
+        let result = game.run_to_completion();
+        let state = &result.final_state;
+
+        for space in 0..BOARD_SIZE {
+            if let Some(owner) = state.properties[space].owner {
+                prop_assert!(owner < n, "space {space} owned by out-of-range player {owner}");
+                prop_assert!(!state.players[owner].bankrupt, "space {space} still owned by bankrupt player {owner}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_set_max_turns_always_bounds_the_game(
+        rules in rule_set(),
+        players in players_config(),
+        seed in any::<u64>(),
+    ) {
+        let max_turns = rules.max_turns.expect("rule_set() always sets max_turns");
+        let mut game = Game::new(rules, &players, seed).unwrap();
+        let result = game.run_to_completion();
+        prop_assert!(result.turns <= max_turns);
+    }
+}

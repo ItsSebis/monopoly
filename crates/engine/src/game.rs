@@ -14,11 +14,9 @@ use crate::state::{GameState, GameView, PropertyState};
 use crate::strategies::make_strategy;
 use crate::strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};
 
-/// Internal safety valve against a non-terminating game — e.g. every player
-/// running Buy None can in principle run for a very long time (see
-/// docs/player-strategies.md). Not user-configurable; Phase 3's batch runner
-/// introduces a documented, configurable `max_turns` for a different
-/// purpose (bounding batch run cost).
+/// Fallback cap against a non-terminating game when `RuleSet.max_turns` isn't
+/// set — e.g. every player running Buy None can in principle run for a very
+/// long time (see docs/player-strategies.md).
 const SAFETY_MAX_TURNS: u32 = 20_000;
 
 pub struct Game {
@@ -106,7 +104,8 @@ impl Game {
     /// Runs turns until one player remains (or the internal safety cap is
     /// hit) and returns the full result.
     pub fn run_to_completion(&mut self) -> GameResult {
-        while !self.is_over() && self.state.turn < SAFETY_MAX_TURNS {
+        let turn_cap = self.rules.max_turns.unwrap_or(SAFETY_MAX_TURNS);
+        while !self.is_over() && self.state.turn < turn_cap {
             self.step_turn();
         }
         let winner = match self.state.active_player_count() {

@@ -257,12 +257,8 @@ async fn get_and_delete_of_an_unknown_id_are_404() {
     let (status, _) = send(&app, get("/runs/run_does_not_exist")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    let response = app
-        .clone()
-        .oneshot(delete("/runs/run_does_not_exist"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let (status, _) = send(&app, delete("/runs/run_does_not_exist")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -285,12 +281,8 @@ async fn delete_removes_a_run_from_the_archive() {
     .await;
     let id = batch["id"].as_str().unwrap().to_string();
 
-    let response = app
-        .clone()
-        .oneshot(delete(&format!("/runs/{id}")))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let (status, _) = send(&app, delete(&format!("/runs/{id}"))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     let (status, _) = send(&app, get(&format!("/runs/{id}"))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);

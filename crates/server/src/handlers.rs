@@ -16,6 +16,7 @@ use monopoly_engine::{
     build_batch_run_record, build_single_run_record, derive_batch_seeds, PlayerConfig, RuleSet,
     SingleRunRecord,
 };
+use rusqlite::Connection;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -62,9 +63,26 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Stamps a passthrough archive body (already confirmed to be a JSON object
+/// by `kind_of`, or freshly serialized from a `BatchRunRecord`) with the
+/// server-assigned fields `docs/data-model.md`'s `Run record` adds on
+/// ingest.
+fn tag_record(mut record: Value, id: &str, kind: &str, created_at: &str) -> Value {
+    let obj = record
+        .as_object_mut()
+        .expect("record is always a JSON object");
+    obj.insert("id".to_string(), Value::String(id.to_string()));
+    obj.insert("kind".to_string(), Value::String(kind.to_string()));
+    obj.insert(
+        "created_at".to_string(),
+        Value::String(created_at.to_string()),
+    );
+    record
+}
+
 async fn create_run(
     State(state): State<AppState>,
-    AppJson(mut body): AppJson<Value>,
+    AppJson(body): AppJson<Value>,
 ) -> Result<Json<Value>, AppError> {
     let kind = kind_of(&body).ok_or_else(|| {
         AppError::BadRequest(
@@ -77,13 +95,7 @@ async fn create_run(
     let id = new_run_id();
     let created_at = now_rfc3339();
 
-    let obj = body
-        .as_object_mut()
-        .expect("kind_of already confirmed this is a JSON object");
-    obj.insert("id".to_string(), Value::String(id.clone()));
-    obj.insert("kind".to_string(), Value::String(kind.to_string()));
-    obj.insert("created_at".to_string(), Value::String(created_at.clone()));
-
+    let body = tag_record(body, &id, kind, &created_at);
     let record_text = serde_json::to_string(&body)?;
     insert_record(&state, id, kind, created_at, strategies, record_text).await?;
 
@@ -114,18 +126,29 @@ async fn create_batch_run(
 
     let id = new_run_id();
     let created_at = now_rfc3339();
-    let mut record = record;
-    let obj = record
-        .as_object_mut()
-        .expect("BatchRunRecord always serializes to a JSON object");
-    obj.insert("id".to_string(), Value::String(id.clone()));
-    obj.insert("kind".to_string(), Value::String("batch".to_string()));
-    obj.insert("created_at".to_string(), Value::String(created_at.clone()));
-
+    let record = tag_record(record, &id, "batch", &created_at);
     let record_text = serde_json::to_string(&record)?;
     insert_record(&state, id, "batch", created_at, strategies, record_text).await?;
 
     Ok(Json(record))
+}
+
+/// Runs `f` against the shared connection on a blocking-safe thread pool
+/// thread — every DB access goes through this, since `rusqlite::Connection`
+/// is synchronous and touching it directly on the async executor would
+/// block it.
+async fn with_db<T, F>(state: &AppState, f: F) -> T
+where
+    F: FnOnce(&Connection) -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.lock().expect("db mutex poisoned");
+        f(&conn)
+    })
+    .await
+    .expect("db task panicked")
 }
 
 async fn insert_record(
@@ -136,13 +159,10 @@ async fn insert_record(
     strategies: String,
     record_text: String,
 ) -> Result<(), AppError> {
-    let db = state.db.clone();
-    tokio::task::spawn_blocking(move || {
-        let conn = db.lock().expect("db mutex poisoned");
-        db::insert(&conn, &id, kind, &created_at, &strategies, &record_text)
+    with_db(state, move |conn| {
+        db::insert(conn, &id, kind, &created_at, &strategies, &record_text)
     })
-    .await
-    .expect("db task panicked")?;
+    .await?;
     Ok(())
 }
 
@@ -156,20 +176,17 @@ async fn list_runs(
     State(state): State<AppState>,
     Query(params): Query<ListParams>,
 ) -> Result<Json<Vec<Value>>, AppError> {
-    let db = state.db.clone();
     // Building each summary parses the full stored record's JSON, which for
     // a large batch (thousands of `per_game_summary` entries) is real CPU
-    // work — done here, inside the same `spawn_blocking` as the DB read,
-    // rather than after `.await` on the async executor thread.
-    let summaries = tokio::task::spawn_blocking(move || -> Result<Vec<Value>, AppError> {
-        let conn = db.lock().expect("db mutex poisoned");
-        let rows = db::list(&conn, params.kind.as_deref(), params.strategy.as_deref())?;
+    // work — done here, inside the same blocking task as the DB read, rather
+    // than after `.await` on the async executor thread.
+    let summaries = with_db(&state, move |conn| -> Result<Vec<Value>, AppError> {
+        let rows = db::list(conn, params.kind.as_deref(), params.strategy.as_deref())?;
         rows.into_iter()
             .map(|(id, kind, created_at, record)| build_summary(id, kind, created_at, &record))
             .collect()
     })
-    .await
-    .expect("db task panicked")?;
+    .await?;
     Ok(Json(summaries))
 }
 
@@ -272,14 +289,8 @@ async fn delete_run(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let db = state.db.clone();
     let id_for_query = id.clone();
-    let deleted = tokio::task::spawn_blocking(move || {
-        let conn = db.lock().expect("db mutex poisoned");
-        db::delete(&conn, &id_for_query)
-    })
-    .await
-    .expect("db task panicked")?;
+    let deleted = with_db(&state, move |conn| db::delete(conn, &id_for_query)).await?;
 
     if deleted {
         Ok(StatusCode::NO_CONTENT)
@@ -289,15 +300,10 @@ async fn delete_run(
 }
 
 async fn fetch_record(state: &AppState, id: &str) -> Result<String, AppError> {
-    let db = state.db.clone();
     let id_for_query = id.to_string();
-    tokio::task::spawn_blocking(move || {
-        let conn = db.lock().expect("db mutex poisoned");
-        db::get(&conn, &id_for_query)
-    })
-    .await
-    .expect("db task panicked")?
-    .ok_or_else(|| AppError::NotFound(format!("no run with id {id}")))
+    with_db(state, move |conn| db::get(conn, &id_for_query))
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("no run with id {id}")))
 }
 
 fn kind_of(body: &Value) -> Option<&'static str> {

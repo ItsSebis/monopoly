@@ -13,17 +13,55 @@ pub enum JailAction {
     RollForDoubles,
 }
 
-/// Every decision a player must make. Phase 1 only has purchase and jail
-/// decisions to make (no houses, mortgages, or auctions exist yet) — the
-/// trait grows additively in later phases alongside those mechanics, rather
-/// than declaring hooks nothing calls yet.
+/// A voluntary building decision, made once per turn (see
+/// `Strategy::decide_build`). Invalid actions (even-build violations, no
+/// bank supply left, wrong player, etc.) are silently skipped by the engine
+/// rather than erroring — a strategy is a heuristic, not a guarantee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildAction {
+    Build(usize),
+    SellHouse(usize),
+}
+
+/// A cash-raising action under a payment shortfall (see
+/// `Strategy::decide_mortgage`). Selling houses and mortgaging are the same
+/// decision in practice — real bankruptcy resolution requires selling houses
+/// on a group before mortgaging any property in it — so one hook and one
+/// action type covers both, rather than splitting them across two hooks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MortgageAction {
+    Mortgage(usize),
+    SellHouse(usize),
+}
+
+/// Every decision a player must make. The trait grows additively as each
+/// mechanic is implemented (Phase 1 had only purchase/jail decisions);
+/// Phase 2 adds building, raising cash under a shortfall, and auction
+/// bidding.
 ///
 /// `player` is passed explicitly rather than left for implementations to
-/// read off `view.state.current_player`: in Phase 1 the two are always the
-/// same, but Phase 2's auction bidding (`decide_auction_bid`) will ask
-/// *non-current* players to decide, at which point that shortcut would
-/// silently evaluate the wrong player.
+/// read off `view.state.current_player`: that shortcut only happens to work
+/// while the acting player and the current player are the same, which
+/// `decide_auction_bid` breaks (it asks every player, not just the current
+/// one, to bid).
 pub trait Strategy: std::fmt::Debug {
     fn decide_purchase(&mut self, view: &GameView, player: usize, offer: &PurchaseOffer) -> bool;
     fn decide_jail_action(&mut self, view: &GameView, player: usize) -> JailAction;
+    /// Called once at the end of `player`'s own turn. Only properties
+    /// `player` owns are ever built on or sold by the returned actions.
+    fn decide_build(&mut self, view: &GameView, player: usize) -> Vec<BuildAction>;
+    /// Called when `player` owes `shortfall` more than their cash on hand.
+    /// The engine applies returned actions in order until the shortfall is
+    /// covered (or the actions run out), then re-checks affordability.
+    fn decide_mortgage(
+        &mut self,
+        view: &GameView,
+        player: usize,
+        shortfall: u32,
+    ) -> Vec<MortgageAction>;
+    /// A sealed bid for `space`, currently up for auction: `None` (or `Some(0)`)
+    /// to abstain. `player` doesn't see other players' bids — see
+    /// docs/roadmap.md's Phase 2 auction design note for why auctions are
+    /// modeled as a single sealed round rather than live ascending bidding.
+    fn decide_auction_bid(&mut self, view: &GameView, player: usize, space: usize) -> Option<u32>;
 }

@@ -1,6 +1,13 @@
 use crate::board::{Board, ColorGroup, BOARD_SIZE, RAILROAD_SPACES, UTILITY_SPACES};
+use crate::cards::DeckKind;
 use crate::rules::RuleSet;
 use serde::Serialize;
+
+/// The bank's starting supply of houses and hotels — a fixed scarcity that's
+/// part of the real game's strategy, not configurable (see
+/// docs/game-rules.md's Building houses and hotels section).
+pub const STARTING_HOUSES: u8 = 32;
+pub const STARTING_HOTELS: u8 = 12;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlayerState {
@@ -16,6 +23,10 @@ pub struct PlayerState {
     /// 3-turn cap.
     pub jail_turns: u8,
     pub bankrupt: bool,
+    /// Which deck(s) a held "Get Out of Jail Free" card should return to
+    /// once used or transferred — usually empty, occasionally one entry,
+    /// rarely both.
+    pub goojf_cards: Vec<DeckKind>,
 }
 
 impl PlayerState {
@@ -27,20 +38,38 @@ impl PlayerState {
             in_jail: false,
             jail_turns: 0,
             bankrupt: false,
+            goojf_cards: Vec::new(),
         }
     }
 }
 
-/// Live game state. Ownership is a `Vec` indexed directly by board space
-/// (always exactly `BOARD_SIZE` long) rather than a hash map — the board
-/// never changes size, so a direct index is both simpler and faster than
-/// hashing for the every-turn ownership lookups the turn loop does.
+/// A board space's ownable state. Unused (left default) on spaces that
+/// aren't ownable.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct PropertyState {
+    pub owner: Option<usize>,
+    /// 0 = unimproved, 1-4 = that many houses, 5 = a hotel. Only meaningful
+    /// for streets.
+    pub houses: u8,
+    pub mortgaged: bool,
+}
+
+/// Live game state. Property state is a `Vec` indexed directly by board
+/// space (always exactly `BOARD_SIZE` long) rather than a hash map — the
+/// board never changes size, so a direct index is both simpler and faster
+/// than hashing for the every-turn ownership lookups the turn loop does.
 #[derive(Debug, Clone, Serialize)]
 pub struct GameState {
     pub turn: u32,
     pub current_player: usize,
     pub players: Vec<PlayerState>,
-    pub owners: Vec<Option<usize>>,
+    pub properties: Vec<PropertyState>,
+    pub bank_houses_remaining: u8,
+    pub bank_hotels_remaining: u8,
+    /// Accumulates payments to the bank when `RuleSet.free_parking_pot` is
+    /// enabled; always 0 otherwise (see docs/game-rules.md's Free Parking
+    /// section).
+    pub free_parking_pot: u32,
 }
 
 impl GameState {
@@ -52,7 +81,10 @@ impl GameState {
                 .iter()
                 .map(|n| PlayerState::new(n.clone(), rules.starting_cash))
                 .collect(),
-            owners: vec![None; BOARD_SIZE],
+            properties: vec![PropertyState::default(); BOARD_SIZE],
+            bank_houses_remaining: STARTING_HOUSES,
+            bank_hotels_remaining: STARTING_HOTELS,
+            free_parking_pot: 0,
         }
     }
 
@@ -74,8 +106,12 @@ impl GameView<'_> {
         &self.state.players[index]
     }
 
+    pub fn property(&self, space: usize) -> &PropertyState {
+        &self.state.properties[space]
+    }
+
     pub fn owner_of(&self, space: usize) -> Option<usize> {
-        self.state.owners[space]
+        self.state.properties[space].owner
     }
 
     /// Whether `player` owns every street in `group` (the monopoly bonus
@@ -83,29 +119,39 @@ impl GameView<'_> {
     pub fn owns_full_group(&self, player: usize, group: ColorGroup) -> bool {
         self.board
             .group_members(group)
-            .all(|space| self.state.owners[space] == Some(player))
+            .all(|space| self.state.properties[space].owner == Some(player))
+    }
+
+    /// Every space in `group`, alongside its current house count — the shape
+    /// `building.rs`'s pure validation functions want.
+    pub fn group_house_counts(&self, group: ColorGroup) -> Vec<u8> {
+        self.board
+            .group_members(group)
+            .map(|space| self.state.properties[space].houses)
+            .collect()
     }
 
     pub fn owned_railroad_count(&self, player: usize) -> usize {
         RAILROAD_SPACES
             .iter()
-            .filter(|&&s| self.state.owners[s] == Some(player))
+            .filter(|&&s| self.state.properties[s].owner == Some(player))
             .count()
     }
 
     pub fn owned_utility_count(&self, player: usize) -> usize {
         UTILITY_SPACES
             .iter()
-            .filter(|&&s| self.state.owners[s] == Some(player))
+            .filter(|&&s| self.state.properties[s].owner == Some(player))
             .count()
     }
 
     /// Cash on hand plus the purchase price of every property owned
-    /// (undiscounted for mortgage/building state, since neither exists yet).
+    /// (undiscounted for mortgage/building state — matching the official
+    /// income-tax rule, which uses list price regardless of improvements).
     pub fn net_worth(&self, player: usize) -> u32 {
         let cash = self.state.players[player].cash.max(0) as u32;
         let properties: u32 = (0..BOARD_SIZE)
-            .filter(|&s| self.state.owners[s] == Some(player))
+            .filter(|&s| self.state.properties[s].owner == Some(player))
             .filter_map(|s| self.board.space(s).price())
             .sum();
         cash + properties

@@ -6,19 +6,19 @@ A strategy implements the `Strategy` trait from [simulation-engine.md](./simulat
 
 ### Buy All
 
-Buys every property it can afford at the moment of landing, keeping only a small safety cash reserve (configurable, default $50) to cover near-term rent risk. Fully committed to accumulating property; will mortgage a property to build on the same or another group rather than sit on cash. In jail, always tries to leave as fast as possible (pay the fine immediately if it has one, else use a card, else pay rather than risk missed turns) so it can keep landing on and building up properties.
+Buys every property it can afford at the moment of landing, keeping only a small safety cash reserve (configurable, default $50) to cover near-term rent risk. Builds on every monopoly it holds as soon as its reserve allows, cheapest-eligible-property first. In jail, pays the fine immediately if affordable (a held "Get Out of Jail Free" card is always used automatically by the engine before any strategy is even asked — see [game-rules.md](./game-rules.md#jail) — so this only covers what happens without one).
 
 ### Buy Good
 
-Buys based on a value heuristic rather than "can afford it": each candidate property is scored on (a) rent-to-price ratio, (b) how close it puts the player to completing a monopoly, and (c) statistical landing frequency (properties past Jail — the orange and red groups — are landed on disproportionately often due to the "just visiting" bounce, and are weighted up). Only buys when the score clears a threshold *and* a cash reserve (default $150) is maintained afterward. Builds houses only once a full monopoly is held and cash reserve allows it, following the even-build rule. In jail, stays if it holds few or no monopolies (waiting out variance costs little), but pays to leave promptly once it holds a monopoly worth actively collecting rent on.
+Buys based on a value heuristic rather than "can afford it": each candidate property is scored on (a) rent-to-price ratio and (b) how close it puts the player to completing a monopoly. Only buys when the score clears a threshold *and* a cash reserve (default $150) is maintained afterward. (A landing-frequency weighting — e.g. valuing the orange/red groups higher since they're statistically landed on more often just past Jail — was considered but isn't implemented; the two-factor heuristic already gives distinct-enough behavior from Buy All.) Builds on its monopolies the same way Buy All does, just with the larger $150 reserve — naturally slower and more conservative without needing separate building logic. In jail, stays if it holds few or no monopolies (waiting out variance costs little), but pays to leave promptly once it holds a monopoly worth actively collecting rent on.
 
 ### Buy Bad
 
-A deliberately suboptimal baseline, included so batch analysis has a clear "worse" reference point to measure the other strategies against (see [analysis-and-metrics.md](./analysis-and-metrics.md#strategy-head-to-head-matrix)). Prioritizes expensive, low rent-to-price properties (the inverse of Buy Good's heuristic) and ignores monopoly completion. Overspends relative to its cash reserve, making it more building- and mortgage-averse later in the game simply because it has less to work with. In jail, rolls for doubles by default (free, but slower) rather than paying, even when it can afford to leave sooner.
+A deliberately suboptimal baseline, included so batch analysis has a clear "worse" reference point to measure the other strategies against (see [analysis-and-metrics.md](./analysis-and-metrics.md#strategy-head-to-head-matrix)). Prioritizes expensive, low rent-to-price properties (the inverse of Buy Good's heuristic) and ignores monopoly completion; the same inverted heuristic makes it *overbid* on those same low-value properties at auction. Never builds — its persistently thin cash position (from buying down to a $20 reserve) means it essentially never has the surplus to, which is a faithful approximation of "rarely" without needing separate never-quite-triggers logic. In jail, rolls for doubles by default (free, but slower) rather than paying, even when it can afford to leave sooner.
 
 ### Buy None
 
-Never buys, never bids in auctions, never builds. Used as a floor-line control (a game full of Buy None strategies effectively never ends by bankruptcy through rent, only through configured tax/luxury attrition, which is itself a useful sanity signal for validating the engine). Still makes jail decisions using the same logic as Buy Good, since jail behavior isn't tied to ownership.
+Never buys, never bids in auctions, never builds, never mortgages (it owns nothing to mortgage). Used as a floor-line control. Still makes jail decisions using the same logic as Buy Good, since jail behavior isn't tied to ownership.
 
 ## Decision summary by strategy
 
@@ -26,12 +26,14 @@ Never buys, never bids in auctions, never builds. Used as a floor-line control (
 |---|---|---|---|---|
 | Purchase | Always, if reserve allows | Threshold heuristic | Inverse heuristic | Never |
 | Auction bid | Up to affordability minus reserve | Up to heuristic value | Overbids on poor properties | Always abstains |
-| Build | ASAP once monopoly held | Once monopoly held, reserve-gated | Rarely (cash-poor) | Never |
-| Mortgage | Freely, to fund building | Only to avoid bankruptcy | Only to avoid bankruptcy | N/A (owns nothing) |
-| Jail | Leave ASAP | Stay early, leave once profitable | Roll for doubles (default) | Same as Buy Good |
+| Build | ASAP once monopoly held, $50 reserve | Same, $150 reserve | Never (see above) | Never (owns nothing) |
+| Mortgage / sell houses | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | N/A (owns nothing) |
+| Jail (no card held) | Pay if affordable | Stay early, pay once profitable | Roll for doubles (default) | Same as Buy Good |
+
+A held "Get Out of Jail Free" card is always used automatically for every strategy, before `decide_jail_action` is even called — see [game-rules.md](./game-rules.md#jail).
 
 ## Custom strategies
 
-Anything implementing the `Strategy` trait can be used interchangeably with the built-ins — by the CLI (`--strategy` referencing a registered implementation or a scripted config), by the server for batch dispatch, and by the browser's strategy picker (which lists whatever strategies the running engine build has registered). A custom strategy only needs to implement the hooks it cares about differently; sensible defaults (mirroring Buy Good) are provided for the rest via default trait methods, so e.g. a strategy that only changes jail behavior doesn't need to reimplement purchasing.
+Anything implementing the `Strategy` trait can be used interchangeably with the built-ins — by the CLI (`--strategy` referencing a registered implementation or a scripted config), by the server for batch dispatch, and by the browser's strategy picker (which lists whatever strategies the running engine build has registered). As of Phase 2, the trait has no default method implementations — a custom strategy must implement all five hooks, even a trivial one for a hook it doesn't care about (e.g. `decide_build` returning an empty `Vec`). Default implementations (e.g. mirroring Buy Good) are a reasonable future addition once a real custom strategy actually needs to override only one or two hooks; nothing in Phase 1-2 does.
 
 Parameterized variants (e.g. "Buy Good with a $300 reserve" instead of $150) are expressed as config on top of a base strategy rather than as wholly new types — see `StrategyConfig` in [data-model.md](./data-model.md#playerconfig).

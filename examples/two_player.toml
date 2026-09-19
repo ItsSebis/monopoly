@@ -1,0 +1,17 @@
+[rules]
+starting_cash = 1500
+go_salary = 200
+jail_fine = 50
+luxury_tax = 75
+
+[rules.income_tax_mode]
+mode = "choice"
+flat_amount = 200
+
+[[players]]
+name = "Alice"
+strategy = "buy_all"
+
+[[players]]
+name = "Bob"
+strategy = "buy_none"

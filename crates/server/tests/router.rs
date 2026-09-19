@@ -203,6 +203,55 @@ async fn post_runs_batch_with_an_unknown_strategy_is_a_400_not_a_500() {
 }
 
 #[tokio::test]
+async fn post_runs_with_malformed_json_body_is_a_400_with_the_json_error_envelope() {
+    let app = app();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/runs")
+        .header("content-type", "application/json")
+        .body(Body::from("{not valid json"))
+        .unwrap();
+    let (status, body) = send(&app, request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Must be `docs/api.md`'s `{ "error": "message" }` envelope, not axum's
+    // default plain-text rejection body.
+    assert!(body["error"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn post_runs_batch_with_missing_fields_is_a_400_with_the_json_error_envelope() {
+    let app = app();
+    let (status, body) = send(&app, post("/runs/batch", json!({ "game_count": 5 }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn replay_game_with_a_non_numeric_seed_is_a_400_with_the_json_error_envelope() {
+    let app = app();
+    let (_, batch) = send(
+        &app,
+        post(
+            "/runs/batch",
+            json!({
+                "rule_set": RuleSet::default(),
+                "players": [
+                    { "name": "P1", "strategy": "buy_good" },
+                    { "name": "P2", "strategy": "buy_bad" },
+                ],
+                "game_count": 2,
+            }),
+        ),
+    )
+    .await;
+    let id = batch["id"].as_str().unwrap();
+
+    let (status, body) = send(&app, get(&format!("/runs/{id}/games/not-a-number"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().is_some());
+}
+
+#[tokio::test]
 async fn get_and_delete_of_an_unknown_id_are_404() {
     let app = app();
     let (status, _) = send(&app, get("/runs/run_does_not_exist")).await;

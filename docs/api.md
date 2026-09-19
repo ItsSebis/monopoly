@@ -10,7 +10,7 @@ Submit a completed run for archiving. Used by:
 - The CLI, when invoked with `--archive-url` (see [headless-cli.md](./headless-cli.md)).
 - The browser, after a live single game finishes, if the user chooses to save it.
 
-Body: `engine::run_record`'s `SingleRunRecord` or `BatchRunRecord` shape ([data-model.md](./data-model.md#run-record)) — i.e. a `Run record` *without* `id`/`kind`/`created_at`, since the server assigns those on ingest. The two shapes are disambiguated by which required fields are present (`seed`/`events` for a single run, `seeds`/`per_game_summary` for a batch) rather than an explicit `kind` field in the request. Returns `{ "id": "run_..." }`.
+Body: `engine::run_record`'s `SingleRunRecord` or `BatchRunRecord` shape ([data-model.md](./data-model.md#run-record)) — i.e. a `Run record` *without* `id`/`kind`/`created_at`, since the server assigns those on ingest. The two shapes are disambiguated by which required fields are present (`seed`/`events` for a single run, `seeds`/`per_game_summary` for a batch) rather than an explicit `kind` field in the request. Returns the full archived `Run record` (the submitted body plus the assigned `id`/`kind`/`created_at`) — the CLI's `--archive-url` only reads `id` off of it, but callers that want the rest (e.g. the browser) don't need a follow-up `GET`.
 
 ## `POST /runs/batch`
 

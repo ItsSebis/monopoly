@@ -6,15 +6,17 @@
 //! dozen types purely for a passthrough archive body. `GET /runs/{id}`
 //! likewise returns the stored JSON text unchanged rather than round-tripping
 //! it through a Rust type.
-use axum::extract::{Path, Query, State};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{FromRequest, Path, Query, Request, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{async_trait, Json, Router};
 use monopoly_engine::{
     build_batch_run_record, build_single_run_record, derive_batch_seeds, PlayerConfig, RuleSet,
     SingleRunRecord,
 };
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
@@ -23,6 +25,32 @@ use crate::db;
 use crate::error::AppError;
 use crate::ids::{new_run_id, now_rfc3339};
 use crate::state::AppState;
+
+/// A `Json<T>` extractor whose rejections go through `AppError` instead of
+/// axum's default plain-text rejection body, so a malformed/missing-header
+/// request body still gets `docs/api.md`'s `{ "error": "message" }` envelope
+/// (with 400, not axum's default 415/422) instead of a bare-text response.
+struct AppJson<T>(T);
+
+#[async_trait]
+impl<S, T> FromRequest<S> for AppJson<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(AppJson(value)),
+            Err(rejection) => Err(AppError::BadRequest(json_rejection_message(rejection))),
+        }
+    }
+}
+
+fn json_rejection_message(rejection: JsonRejection) -> String {
+    rejection.body_text()
+}
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
@@ -36,7 +64,7 @@ pub fn build_router(state: AppState) -> Router {
 
 async fn create_run(
     State(state): State<AppState>,
-    Json(mut body): Json<Value>,
+    AppJson(mut body): AppJson<Value>,
 ) -> Result<Json<Value>, AppError> {
     let kind = kind_of(&body).ok_or_else(|| {
         AppError::BadRequest(
@@ -71,7 +99,7 @@ struct BatchRunRequest {
 
 async fn create_batch_run(
     State(state): State<AppState>,
-    Json(req): Json<BatchRunRequest>,
+    AppJson(req): AppJson<BatchRunRequest>,
 ) -> Result<Json<Value>, AppError> {
     let strategies = strategies_string(&req.players);
 
@@ -129,17 +157,19 @@ async fn list_runs(
     Query(params): Query<ListParams>,
 ) -> Result<Json<Vec<Value>>, AppError> {
     let db = state.db.clone();
-    let rows = tokio::task::spawn_blocking(move || {
+    // Building each summary parses the full stored record's JSON, which for
+    // a large batch (thousands of `per_game_summary` entries) is real CPU
+    // work — done here, inside the same `spawn_blocking` as the DB read,
+    // rather than after `.await` on the async executor thread.
+    let summaries = tokio::task::spawn_blocking(move || -> Result<Vec<Value>, AppError> {
         let conn = db.lock().expect("db mutex poisoned");
-        db::list(&conn, params.kind.as_deref(), params.strategy.as_deref())
+        let rows = db::list(&conn, params.kind.as_deref(), params.strategy.as_deref())?;
+        rows.into_iter()
+            .map(|(id, kind, created_at, record)| build_summary(id, kind, created_at, &record))
+            .collect()
     })
     .await
     .expect("db task panicked")?;
-
-    let summaries = rows
-        .into_iter()
-        .map(|(id, kind, created_at, record)| build_summary(id, kind, created_at, &record))
-        .collect::<Result<Vec<_>, AppError>>()?;
     Ok(Json(summaries))
 }
 
@@ -193,27 +223,48 @@ async fn get_run(
 
 async fn replay_game(
     State(state): State<AppState>,
-    Path((id, seed)): Path<(String, u64)>,
+    Path((id, seed)): Path<(String, String)>,
 ) -> Result<Json<SingleRunRecord>, AppError> {
-    let record = fetch_record(&state, &id).await?;
-    let value: Value = serde_json::from_str(&record)?;
+    // Parsed by hand rather than via `Path<(String, u64)>`: a non-numeric
+    // `seed` segment would otherwise fail axum's own path deserialization,
+    // which rejects with a plain-text body rather than `docs/api.md`'s
+    // `{ "error": "message" }` envelope.
+    let seed: u64 = seed
+        .parse()
+        .map_err(|_| AppError::BadRequest(format!("seed {seed} is not a valid u64")))?;
 
-    if value.get("kind").and_then(Value::as_str) != Some("batch") {
-        return Err(AppError::BadRequest(format!("run {id} is not a batch run")));
-    }
-    let seeds: Vec<u64> = serde_json::from_value(value["seeds"].clone())?;
-    if !seeds.contains(&seed) {
-        return Err(AppError::BadRequest(format!(
-            "seed {seed} is not part of batch run {id}"
-        )));
-    }
-    let rule_set: RuleSet = serde_json::from_value(value["rule_set"].clone())?;
-    let players: Vec<PlayerConfig> = serde_json::from_value(value["players"].clone())?;
+    // Fetching, parsing the (potentially large, for a big batch) stored JSON,
+    // validating it, and re-running the game are all done inside one
+    // `spawn_blocking` — none of that CPU/DB work belongs on the async
+    // executor thread, and there's no reason to hop back to it in between.
+    let db = state.db.clone();
+    let id_for_query = id.clone();
+    let single = tokio::task::spawn_blocking(move || -> Result<SingleRunRecord, AppError> {
+        let record_text = {
+            let conn = db.lock().expect("db mutex poisoned");
+            db::get(&conn, &id_for_query)?
+        };
+        let record_text = record_text
+            .ok_or_else(|| AppError::NotFound(format!("no run with id {id_for_query}")))?;
+        let value: Value = serde_json::from_str(&record_text)?;
 
-    let single =
-        tokio::task::spawn_blocking(move || build_single_run_record(rule_set, players, seed))
-            .await
-            .expect("replay task panicked")?;
+        if value.get("kind").and_then(Value::as_str) != Some("batch") {
+            return Err(AppError::BadRequest(format!(
+                "run {id_for_query} is not a batch run"
+            )));
+        }
+        let seeds: Vec<u64> = serde_json::from_value(value["seeds"].clone())?;
+        if !seeds.contains(&seed) {
+            return Err(AppError::BadRequest(format!(
+                "seed {seed} is not part of batch run {id_for_query}"
+            )));
+        }
+        let rule_set: RuleSet = serde_json::from_value(value["rule_set"].clone())?;
+        let players: Vec<PlayerConfig> = serde_json::from_value(value["players"].clone())?;
+        Ok(build_single_run_record(rule_set, players, seed)?)
+    })
+    .await
+    .expect("replay task panicked")?;
     Ok(Json(single))
 }
 

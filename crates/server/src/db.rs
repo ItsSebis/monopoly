@@ -53,16 +53,34 @@ pub fn list(
     kind: Option<&str>,
     strategy: Option<&str>,
 ) -> rusqlite::Result<Vec<(String, String, String, String)>> {
+    // Strategy ids themselves contain `_` (`buy_good`, `buy_all`, ...), which
+    // SQLite's LIKE treats as a single-character wildcard (and `%` as a
+    // multi-character one) unless escaped. Left unescaped, `?strategy=`
+    // wouldn't just risk substring false positives — `_` would make
+    // `strategy=buy_good` also match any stored id that merely has *some*
+    // character in that position (e.g. a hypothetical `buyXgood`), and
+    // `strategy=%` would match almost every row. Escape both metacharacters
+    // (and the escape character itself) before binding, and match literally.
+    let escaped_strategy = strategy.map(escape_like_pattern);
     let mut stmt = conn.prepare(
         "SELECT id, kind, created_at, record FROM runs
          WHERE (?1 IS NULL OR kind = ?1)
-           AND (?2 IS NULL OR strategies LIKE '%,' || ?2 || ',%')
+           AND (?2 IS NULL OR strategies LIKE '%,' || ?2 || ',%' ESCAPE '\\')
          ORDER BY created_at DESC",
     )?;
-    let rows = stmt.query_map(params![kind, strategy], |row| {
+    let rows = stmt.query_map(params![kind, escaped_strategy], |row| {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
     })?;
     rows.collect()
+}
+
+/// Escapes `\`, `%`, and `_` so a user-supplied string can be embedded in a
+/// `LIKE ... ESCAPE '\'` pattern and matched literally.
+fn escape_like_pattern(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// Returns whether a row was actually deleted.
@@ -108,6 +126,30 @@ mod tests {
         let matches = list(&conn, Some("batch"), Some("buy_good")).unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].0, "c");
+    }
+
+    #[test]
+    fn list_does_not_treat_underscores_in_strategy_ids_as_wildcards() {
+        let conn = memory_db();
+        // Real strategy ids contain `_` (e.g. `buy_good`). Filtering by one
+        // must not also match a row whose strategies happen to differ by one
+        // character in that position, the way an unescaped SQL LIKE would.
+        insert(&conn, "a", "single", "t1", ",buy_good,", "{}").unwrap();
+        insert(&conn, "b", "single", "t2", ",buyXgood,", "{}").unwrap();
+
+        let matches = list(&conn, None, Some("buy_good")).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].0, "a");
+    }
+
+    #[test]
+    fn list_does_not_treat_percent_in_strategy_filter_as_a_wildcard() {
+        let conn = memory_db();
+        insert(&conn, "a", "single", "t1", ",buy_good,", "{}").unwrap();
+        insert(&conn, "b", "single", "t2", ",buy_bad,", "{}").unwrap();
+
+        // A literal `%` in the filter must not turn into "match everything".
+        assert_eq!(list(&conn, None, Some("%")).unwrap().len(), 0);
     }
 
     #[test]

@@ -3,19 +3,11 @@
 //! (`docs/analysis-and-metrics.md`'s batch-only metrics). Per
 //! `docs/architecture.md`'s determinism-as-storage-optimization, only each
 //! game's `(seed, winner, turns)` summary survives the call — the full event
-//! log is dropped as soon as that game's `PerGameStats` is computed, and
-//! everything can always be regenerated later from `(RuleSet, players,
-//! seed)`.
-//!
-//! Caveat, and the main thing to fix before running very large batches: the
-//! per-game `PerGameStats` are *not* folded in and dropped one at a time —
-//! `run_batch` collects all of them up front and only then calls
-//! `aggregate`. `PerGameStats::net_worth_by_turn` holds one heap-allocated
-//! row per turn, and an uncapped game can reach `SAFETY_MAX_TURNS`, so peak
-//! memory grows linearly with the batch: roughly 0.7 GB per 1,000 four-player
-//! games with no `RuleSet::max_turns` set. Setting `max_turns` bounds it;
-//! folding each game's contribution inside the `par_iter` (nothing in
-//! `aggregate` needs more than the *last* net-worth row) would remove it.
+//! log, and the bulk of `PerGameStats` (in particular `net_worth_by_turn`,
+//! one heap-allocated row per turn), are dropped as soon as the game's
+//! `GameContribution` is extracted, so peak memory stays proportional to the
+//! batch size, not to total turns played across it. Everything can always be
+//! regenerated later from `(RuleSet, players, seed)`.
 
 use std::collections::BTreeMap;
 
@@ -26,7 +18,7 @@ use crate::board::{Board, BOARD_SIZE};
 use crate::config::PlayerConfig;
 use crate::game::{ConfigError, Game};
 use crate::rules::RuleSet;
-use crate::stats::{compute_stats, PerGameStats};
+use crate::stats::{compute_stats, PropertyRoi};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchGameSummary {
@@ -101,6 +93,21 @@ pub struct BatchResult {
     pub aggregate: AggregateStats,
 }
 
+/// Everything `aggregate` needs from one game's `PerGameStats` — extracted
+/// immediately after `compute_stats` returns so the much larger
+/// `net_worth_by_turn` timeline (and the rest of `PerGameStats`) can be
+/// dropped before the next game runs, rather than retained for the whole
+/// batch. `O(1)`-ish in size (a handful of small counts/vecs), unlike
+/// `PerGameStats` which is `O(turns)`.
+struct GameContribution {
+    dice_roll_counts: [u64; 11],
+    landing_counts: Vec<u64>,
+    bankruptcy_turns: Vec<u32>,
+    property_roi: Vec<PropertyRoi>,
+    /// The last `net_worth_by_turn` row — final net worth per player.
+    final_net_worth: Vec<u32>,
+}
+
 /// Runs one full game per seed, in parallel, and folds each into a shared
 /// aggregate. Games are independent (no shared mutable state), so this
 /// parallelizes trivially across `seeds`.
@@ -114,7 +121,7 @@ pub fn run_batch(
     Game::new(rules.clone(), &players, 0)?;
 
     let board = Board::standard();
-    let per_game: Vec<(BatchGameSummary, PerGameStats)> = seeds
+    let per_game: Vec<(BatchGameSummary, GameContribution)> = seeds
         .par_iter()
         .map(|&seed| {
             let mut game =
@@ -126,7 +133,16 @@ pub fn run_batch(
                 winner: result.winner,
                 turns: result.turns,
             };
-            (summary, stats)
+            let contribution = GameContribution {
+                dice_roll_counts: stats.dice_roll_counts,
+                landing_counts: stats.landing_counts,
+                bankruptcy_turns: stats.bankruptcies.iter().map(|b| b.turn).collect(),
+                property_roi: stats.property_roi,
+                final_net_worth: stats.net_worth_by_turn.last().cloned().unwrap_or_default(),
+            };
+            // `stats` (and its O(turns) `net_worth_by_turn`) is dropped here,
+            // before this closure returns — not retained for the batch.
+            (summary, contribution)
         })
         .collect();
 
@@ -140,7 +156,7 @@ pub fn run_batch(
 
 fn aggregate(
     players: &[PlayerConfig],
-    per_game: &[(BatchGameSummary, PerGameStats)],
+    per_game: &[(BatchGameSummary, GameContribution)],
 ) -> AggregateStats {
     let n = players.len();
     let strategies: Vec<&str> = players.iter().map(|p| p.strategy.as_str()).collect();
@@ -156,17 +172,20 @@ fn aggregate(
     let mut landing_counts = vec![0u64; BOARD_SIZE];
     let mut final_net_worth: BTreeMap<String, Vec<f64>> = BTreeMap::new();
 
-    for (summary, stats) in per_game {
+    for (summary, contribution) in per_game {
         game_length.push(summary.turns);
-        for (total, count) in dice_roll_counts.iter_mut().zip(stats.dice_roll_counts) {
+        for (total, count) in dice_roll_counts
+            .iter_mut()
+            .zip(contribution.dice_roll_counts)
+        {
             *total += count;
         }
-        for (total, count) in landing_counts.iter_mut().zip(&stats.landing_counts) {
+        for (total, count) in landing_counts.iter_mut().zip(&contribution.landing_counts) {
             *total += count;
         }
-        bankruptcy_turns.extend(stats.bankruptcies.iter().map(|b| b.turn));
+        bankruptcy_turns.extend(contribution.bankruptcy_turns.iter().copied());
 
-        for roi in &stats.property_roi {
+        for roi in &contribution.property_roi {
             if let Some(owner) = roi.owner {
                 let strategy = strategies[owner].to_string();
                 *roi_numerator.entry(strategy.clone()).or_default() += roi.rent_collected as f64;
@@ -174,13 +193,11 @@ fn aggregate(
             }
         }
 
-        if let Some(final_row) = stats.net_worth_by_turn.last() {
-            for (player, &net_worth) in final_row.iter().enumerate() {
-                final_net_worth
-                    .entry(strategies[player].to_string())
-                    .or_default()
-                    .push(net_worth as f64);
-            }
+        for (player, &net_worth) in contribution.final_net_worth.iter().enumerate() {
+            final_net_worth
+                .entry(strategies[player].to_string())
+                .or_default()
+                .push(net_worth as f64);
         }
 
         for (player, strategy) in strategies.iter().enumerate() {

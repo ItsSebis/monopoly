@@ -41,6 +41,14 @@ fn patient_jail_action(view: &GameView, player: usize) -> JailAction {
     }
 }
 
+/// How much `player` can commit beyond `reserve` — the ceiling every bidding
+/// strategy caps its auction bid at. `None` when already at or below the
+/// reserve, which is also how a strategy abstains from the auction.
+fn cash_above_reserve(view: &GameView, player: usize, reserve: i64) -> Option<u32> {
+    let spare = view.player(player).cash - reserve;
+    (spare > 0).then_some(spare as u32)
+}
+
 /// Building logic shared by Buy All and Buy Good (see
 /// docs/player-strategies.md): build one increment at a time on every fully
 /// owned group, cheapest-eligible-property first, stopping once cash would
@@ -97,15 +105,13 @@ fn build_within_reserve(view: &GameView, player: usize, reserve: i64) -> Vec<Bui
 /// is covered. Every building in a color group is sold before any property
 /// in it is mortgaged, matching the official rule.
 ///
-/// Unlike `build_within_reserve` — where overshooting is harmless, since the
-/// engine just skips what it can't do — the plan here has to be *legal*, not
-/// merely optimistic: the engine silently drops a sale the even-build rule
-/// forbids (only the group's most-built property may be sold from) or a
-/// mortgage on a still-built-up group, and every dropped action is cash the
-/// strategy counted but never received, which is the difference between
-/// surviving a payment and going bankrupt holding a full board. So the plan
-/// simulates house counts as it goes and always sells from the group's
-/// most-built property.
+/// Unlike `build_within_reserve`, where overshooting is harmless, this plan
+/// has to be *legal*: the engine silently drops a sale the even-build rule
+/// forbids or a mortgage on a still-built-up group, and every dropped action
+/// is cash the strategy counted toward the shortfall but never received —
+/// the difference between surviving a payment and going bankrupt holding a
+/// full board. Hence the simulated house counts, and always selling from the
+/// group's most-built property.
 fn raise_cash_cheapest_first(
     view: &GameView,
     player: usize,
@@ -129,7 +135,6 @@ fn raise_cash_cheapest_first(
             SpaceKind::Street { group, .. } => view.board.group_members(group).collect(),
             _ => Vec::new(),
         };
-        let house_cost = view.board.space(space).house_cost().unwrap_or(0);
         while raised < shortfall {
             let Some(&target) = group_members.iter().max_by_key(|&&m| houses[m]) else {
                 break;
@@ -139,7 +144,7 @@ fn raise_cash_cheapest_first(
             }
             actions.push(MortgageAction::SellHouse(target));
             houses[target] -= 1;
-            raised += house_cost / 2;
+            raised += view.board.space(target).house_cost().unwrap_or(0) / 2;
         }
         if raised < shortfall && group_members.iter().all(|&m| houses[m] == 0) {
             if let Some(price) = view.board.space(space).price() {

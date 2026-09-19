@@ -1,4 +1,6 @@
-use super::{build_within_reserve, patient_jail_action, raise_cash_cheapest_first};
+use super::{
+    build_within_reserve, cash_above_reserve, patient_jail_action, raise_cash_cheapest_first,
+};
 use crate::board::SpaceKind;
 use crate::state::GameView;
 use crate::strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};
@@ -70,11 +72,13 @@ impl Strategy for BuyGood {
         raise_cash_cheapest_first(view, player, shortfall)
     }
 
+    /// Bids its own valuation of the space — the same score that drives its
+    /// purchases — capped by what it can spare above its reserve, and only on
+    /// spaces it would have bought outright.
     fn decide_auction_bid(&mut self, view: &GameView, player: usize, space: usize) -> Option<u32> {
-        let s = score(view, player, space).filter(|&s| s >= RATIO_THRESHOLD)?;
+        let score = score(view, player, space).filter(|&s| s >= RATIO_THRESHOLD)?;
         let price = view.board.space(space).price()?;
-        let valuation = (price as f64 * (1.0 + s)) as u32;
-        let affordable = view.player(player).cash - RESERVE;
-        (affordable > 0).then(|| valuation.min(affordable as u32))
+        let valuation = (price as f64 * (1.0 + score)) as u32;
+        Some(valuation.min(cash_above_reserve(view, player, RESERVE)?))
     }
 }

@@ -1,4 +1,4 @@
-use super::{build_within_reserve, raise_cash_cheapest_first};
+use super::{build_within_reserve, cash_above_reserve, raise_cash_cheapest_first};
 use crate::state::GameView;
 use crate::strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};
 
@@ -38,8 +38,8 @@ impl Strategy for BuyAll {
         raise_cash_cheapest_first(view, player, shortfall)
     }
 
+    /// Bids everything above its reserve, on anything.
     fn decide_auction_bid(&mut self, view: &GameView, player: usize, _space: usize) -> Option<u32> {
-        let max_bid = view.player(player).cash - RESERVE;
-        (max_bid > 0).then_some(max_bid as u32)
+        cash_above_reserve(view, player, RESERVE)
     }
 }

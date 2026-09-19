@@ -51,7 +51,8 @@ pub struct Deck {
 impl Deck {
     /// Draws the top card, returning it to the bottom — except
     /// `GetOutOfJailFree`, which the caller removes from circulation (it's
-    /// held by a player) and must return later via `return_card`.
+    /// held by a player) and must hand back later via
+    /// `return_get_out_of_jail_free_card`.
     pub fn draw(&mut self) -> CardEffect {
         let card = self
             .cards

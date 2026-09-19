@@ -1,4 +1,4 @@
-use super::raise_cash_cheapest_first;
+use super::{cash_above_reserve, raise_cash_cheapest_first};
 use crate::board::SpaceKind;
 use crate::state::GameView;
 use crate::strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};
@@ -39,19 +39,16 @@ impl Strategy for BuyBad {
         raise_cash_cheapest_first(view, player, shortfall)
     }
 
+    /// The inverse of Buy Good's heuristic: the worse the rent-to-price
+    /// ratio, the more this strategy overbids on it.
     fn decide_auction_bid(&mut self, view: &GameView, player: usize, space: usize) -> Option<u32> {
         let price = view.board.space(space).price()?;
-        // The inverse of Buy Good's heuristic: the worse the rent-to-price
-        // ratio, the more this strategy overbids on it.
         let ratio = match view.board.space(space) {
-            SpaceKind::Street {
-                base_rent, price, ..
-            } => base_rent as f64 / price as f64,
+            SpaceKind::Street { base_rent, .. } => base_rent as f64 / price as f64,
             _ => 0.05, // railroads/utilities: no fixed ratio, treated as mediocre
         };
         let overbid_factor = (0.20 - ratio).max(0.0) * 4.0;
-        let cash_room = view.player(player).cash - RESERVE;
-        (cash_room > 0)
-            .then(|| (price as f64 * (1.0 + overbid_factor)).min(cash_room as f64) as u32)
+        let bid = (price as f64 * (1.0 + overbid_factor)) as u32;
+        Some(bid.min(cash_above_reserve(view, player, RESERVE)?))
     }
 }

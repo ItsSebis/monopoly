@@ -2,7 +2,9 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::Serialize;
 
-use crate::board::{Board, SpaceKind, BOARD_SIZE, JAIL_SPACE, RAILROAD_SPACES, UTILITY_SPACES};
+use crate::board::{
+    Board, ColorGroup, SpaceKind, BOARD_SIZE, JAIL_SPACE, RAILROAD_SPACES, UTILITY_SPACES,
+};
 use crate::building::{can_build, can_sell};
 use crate::cards::{standard_decks, CardEffect, Deck, DeckKind};
 use crate::config::PlayerConfig;
@@ -119,10 +121,8 @@ impl Game {
         // final envelope.
         let closing_player = winner.unwrap_or(self.state.current_player);
         self.record(closing_player, Event::GameEnded { winner, turns });
-        // The log is moved out rather than cloned: it reaches tens of
-        // thousands of envelopes in a long game, and copying that once per
-        // game is pure overhead for a batch runner that only wants the
-        // finished log.
+        // Moved out rather than cloned: the log reaches tens of thousands of
+        // envelopes in a long game, and the `Game` is done with it.
         GameResult {
             winner,
             turns,
@@ -242,11 +242,9 @@ impl Game {
         let new = (old + spaces as usize) % BOARD_SIZE;
         self.state.players[player].position = new;
         self.record(player, Event::Move { from: old, to: new });
-        // `spaces > 0` guards against a `move_toward` call that lands a
-        // player exactly where they already stand (`new == old`), which
-        // would otherwise misread as "wrapped past GO" and pay a spurious
-        // salary. No current card can trigger this (none land on Chance or
-        // Community Chest itself), but nothing here should rely on that.
+        // `spaces > 0` keeps a zero-distance `move_toward` (`new == old`)
+        // from misreading as "wrapped past GO". No current card can land a
+        // player where they already stand, but nothing here relies on that.
         if spaces > 0 && new <= old {
             self.pay_from_bank(player, self.rules.go_salary);
             self.record(player, Event::PassGo);
@@ -311,10 +309,8 @@ impl Game {
 
     fn bankrupt_player(&mut self, player: usize, payee: Option<usize>) {
         // Whatever the player did manage to raise still changes hands: a
-        // creditor receives it (official rules — the creditor gets cash,
-        // properties and cards), and only a bankruptcy to the bank takes it
-        // out of play. Zeroing it unconditionally would destroy money at the
-        // exact moment that decides most games.
+        // creditor receives it along with the properties and cards (official
+        // rules); only a bankruptcy to the bank takes it out of play.
         let remaining_cash = self.state.players[player].cash.max(0);
         self.state.players[player].cash = 0;
         self.state.players[player].bankrupt = true;
@@ -324,15 +320,22 @@ impl Game {
         // Real bankruptcy resolution always liquidates houses/hotels first
         // (sold back to the bank) before any property changes hands, so a
         // bankrupt transfer never carries buildings — see docs/game-rules.md.
+        // A transferred property keeps its mortgage state; one returned to the
+        // bank is reset to unowned and unmortgaged.
         for space in 0..BOARD_SIZE {
-            if self.state.properties[space].owner == Some(player) {
-                let houses = self.state.properties[space].houses;
-                if houses == 5 {
-                    self.state.bank_hotels_remaining += 1;
-                } else {
-                    self.state.bank_houses_remaining += houses;
-                }
-                self.state.properties[space].houses = 0;
+            if self.state.properties[space].owner != Some(player) {
+                continue;
+            }
+            let houses = self.state.properties[space].houses;
+            if houses == 5 {
+                self.state.bank_hotels_remaining += 1;
+            } else {
+                self.state.bank_houses_remaining += houses;
+            }
+            self.state.properties[space].houses = 0;
+            match payee {
+                Some(payee) => self.state.properties[space].owner = Some(payee),
+                None => self.state.properties[space] = PropertyState::default(),
             }
         }
 
@@ -340,19 +343,9 @@ impl Game {
         match payee {
             Some(payee) => {
                 self.state.players[payee].cash += remaining_cash;
-                for space in 0..BOARD_SIZE {
-                    if self.state.properties[space].owner == Some(player) {
-                        self.state.properties[space].owner = Some(payee);
-                    }
-                }
                 self.state.players[payee].goojf_cards.extend(goojf_cards);
             }
             None => {
-                for space in 0..BOARD_SIZE {
-                    if self.state.properties[space].owner == Some(player) {
-                        self.state.properties[space] = PropertyState::default();
-                    }
-                }
                 for deck_kind in goojf_cards {
                     self.deck_mut(deck_kind).return_get_out_of_jail_free_card();
                 }
@@ -492,6 +485,20 @@ impl Game {
         self.charge(player, amount, None);
     }
 
+    /// Rent's counterpart to `charge_tax`, recording the debt first for the
+    /// same log-ordering reason.
+    fn charge_rent(&mut self, player: usize, owner: usize, space: usize, amount: u32) {
+        self.record(
+            player,
+            Event::RentPaid {
+                to: owner,
+                amount,
+                space,
+            },
+        );
+        self.charge(player, amount, Some(owner));
+    }
+
     /// Offers `space` for purchase; if declined (or unaffordable) and
     /// `auction_on_decline` is set, runs an auction for it. Shared by normal
     /// landings and the "advance to nearest railroad/utility" card effects,
@@ -567,20 +574,10 @@ impl Game {
     fn resolve_ownable_landing(&mut self, player: usize, space: usize, dice_total: u8) {
         match self.state.properties[space].owner {
             None => self.offer_purchase(player, space),
-            Some(owner) if owner != player => {
-                if self.state.properties[space].mortgaged {
-                    return; // mortgaged properties earn no rent
-                }
+            // A mortgaged property earns its owner no rent.
+            Some(owner) if owner != player && !self.state.properties[space].mortgaged => {
                 let amount = self.rent_due(space, owner, dice_total);
-                self.record(
-                    player,
-                    Event::RentPaid {
-                        to: owner,
-                        amount,
-                        space,
-                    },
-                );
-                self.charge(player, amount, Some(owner));
+                self.charge_rent(player, owner, space, amount);
             }
             Some(_) => {}
         }
@@ -615,6 +612,15 @@ impl Game {
         crate::tax::income_tax_due(self.rules.income_tax_mode, self.view().net_worth(player))
     }
 
+    /// `space`'s position within its own color group — the index that pairs
+    /// with `group_house_counts` in `building.rs`'s even-build checks.
+    fn group_member_index(&self, group: ColorGroup, space: usize) -> usize {
+        self.board
+            .group_members(group)
+            .position(|s| s == space)
+            .expect("space is in its own group")
+    }
+
     /// Attempts to build one house/hotel increment on `space` for `player`;
     /// a no-op if the request is invalid (wrong owner, breaks the even-build
     /// rule, insufficient bank supply, or unaffordable) — see
@@ -631,14 +637,9 @@ impl Game {
         {
             return false;
         }
-        let member_index = self
-            .board
-            .group_members(group)
-            .position(|s| s == space)
-            .expect("space is in its own group");
         if !can_build(
             &self.view().group_house_counts(group),
-            member_index,
+            self.group_member_index(group, space),
             self.rules.even_build_rule,
         ) {
             return false;
@@ -679,14 +680,9 @@ impl Game {
         if self.state.properties[space].owner != Some(player) {
             return false;
         }
-        let member_index = self
-            .board
-            .group_members(group)
-            .position(|s| s == space)
-            .expect("space is in its own group");
         if !can_sell(
             &self.view().group_house_counts(group),
-            member_index,
+            self.group_member_index(group, space),
             self.rules.even_build_rule,
         ) {
             return false;
@@ -816,48 +812,39 @@ impl Game {
         }
     }
 
-    fn advance_to_nearest_railroad(&mut self, player: usize) {
-        let target = nearest(self.state.players[player].position, &RAILROAD_SPACES);
+    /// Moves `player` to the nearest of `spaces` and offers it for purchase
+    /// if it's unowned. Returns `(space, owner)` only when rent is owed to
+    /// another player, since both "advance to nearest" cards charge a special
+    /// rent the caller works out for itself.
+    fn advance_to_nearest(&mut self, player: usize, spaces: &[usize]) -> Option<(usize, usize)> {
+        let target = nearest(self.state.players[player].position, spaces);
         self.move_toward(player, target);
         match self.state.properties[target].owner {
-            None => self.offer_purchase(player, target),
-            Some(owner) if owner != player && !self.state.properties[target].mortgaged => {
-                let amount =
-                    crate::rent::railroad_rent(self.view().owned_railroad_count(owner)) * 2;
-                self.record(
-                    player,
-                    Event::RentPaid {
-                        to: owner,
-                        amount,
-                        space: target,
-                    },
-                );
-                self.charge(player, amount, Some(owner));
+            None => {
+                self.offer_purchase(player, target);
+                None
             }
-            _ => {}
+            Some(owner) if owner != player && !self.state.properties[target].mortgaged => {
+                Some((target, owner))
+            }
+            _ => None,
         }
     }
 
+    fn advance_to_nearest_railroad(&mut self, player: usize) {
+        let Some((target, owner)) = self.advance_to_nearest(player, &RAILROAD_SPACES) else {
+            return;
+        };
+        let amount = crate::rent::railroad_rent(self.view().owned_railroad_count(owner)) * 2;
+        self.charge_rent(player, owner, target, amount);
+    }
+
     fn advance_to_nearest_utility(&mut self, player: usize) {
-        let target = nearest(self.state.players[player].position, &UTILITY_SPACES);
-        self.move_toward(player, target);
-        match self.state.properties[target].owner {
-            None => self.offer_purchase(player, target),
-            Some(owner) if owner != player && !self.state.properties[target].mortgaged => {
-                let (first, second) = self.roll_dice(player);
-                let amount = 10 * (first + second) as u32;
-                self.record(
-                    player,
-                    Event::RentPaid {
-                        to: owner,
-                        amount,
-                        space: target,
-                    },
-                );
-                self.charge(player, amount, Some(owner));
-            }
-            _ => {}
-        }
+        let Some((target, owner)) = self.advance_to_nearest(player, &UTILITY_SPACES) else {
+            return;
+        };
+        let (first, second) = self.roll_dice(player);
+        self.charge_rent(player, owner, target, 10 * (first + second) as u32);
     }
 }
 
@@ -926,7 +913,8 @@ mod tests {
     fn charging_more_than_a_player_can_raise_bankrupts_them_to_the_named_payee() {
         let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
         game.state.players[0].cash = 10;
-        game.state.properties[3].owner = Some(0); // Baltic Avenue, price 60: raise_cash can only get 30 from mortgaging it
+        game.state.properties[3].owner = Some(0); // Baltic Avenue, price 60: mortgages for 30, so 40 is all they can raise
+        let creditor_before = game.state.players[1].cash;
 
         game.charge(0, 1_000, Some(1));
 
@@ -937,27 +925,15 @@ mod tests {
             Some(1),
             "bankruptcy-to-player transfers remaining properties to the payee"
         );
-    }
-
-    #[test]
-    fn bankruptcy_to_a_player_hands_the_creditor_the_remaining_cash_too() {
-        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
-        game.state.players[0].cash = 10;
-        game.state.properties[3].owner = Some(0); // mortgages for 30, so 40 is all they can raise
-        let creditor_before = game.state.players[1].cash;
-
-        game.charge(0, 1_000, Some(1));
-
         assert_eq!(
             game.state.players[1].cash,
             creditor_before + 40,
             "the creditor receives every dollar the debtor managed to raise"
         );
-        assert_eq!(game.state.players[0].cash, 0);
     }
 
     #[test]
-    fn bankruptcy_to_the_bank_takes_the_remaining_cash_out_of_play() {
+    fn charging_more_than_a_player_can_raise_with_no_payee_bankrupts_them_to_the_bank() {
         let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
         game.state.players[0].cash = 10;
         game.state.properties[3].owner = Some(0);
@@ -965,7 +941,12 @@ mod tests {
 
         game.charge(0, 1_000, None);
 
+        assert!(game.state.players[0].bankrupt);
         assert_eq!(game.state.players[0].cash, 0);
+        assert_eq!(
+            game.state.properties[3].owner, None,
+            "bankruptcy-to-bank returns properties to the unowned pool"
+        );
         assert_eq!(
             game.state.players[1].cash, other_before,
             "no other player gains from a bankruptcy to the bank"
@@ -1030,21 +1011,6 @@ mod tests {
         assert!(
             (0..BOARD_SIZE).all(|s| game.state.properties[s].houses == 0),
             "every house should have been sold before any mortgage"
-        );
-    }
-
-    #[test]
-    fn charging_more_than_a_player_can_raise_with_no_payee_frees_properties_to_the_bank() {
-        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
-        game.state.players[0].cash = 10;
-        game.state.properties[3].owner = Some(0);
-
-        game.charge(0, 1_000, None);
-
-        assert!(game.state.players[0].bankrupt);
-        assert_eq!(
-            game.state.properties[3].owner, None,
-            "bankruptcy-to-bank returns properties to the unowned pool"
         );
     }
 
@@ -1259,6 +1225,14 @@ mod tests {
         assert_eq!(cash_before - game.state.players[0].cash, 2 * 25 + 100);
     }
 
+    /// What the winner of the most recent auction actually paid.
+    fn last_auction_price(game: &Game) -> Option<u32> {
+        game.log.iter().rev().find_map(|e| match e.event {
+            Event::AuctionWon { amount, .. } => Some(amount),
+            _ => None,
+        })
+    }
+
     /// A test-only strategy with a fixed auction bid, for deterministic
     /// auction-settlement tests — the built-in strategies' bids depend on a
     /// heuristic score, not a value a test can pin exactly.
@@ -1307,16 +1281,11 @@ mod tests {
         game.run_auction(1);
 
         assert_eq!(game.state.properties[1].owner, Some(0));
-        let amount = game
-            .log
-            .iter()
-            .rev()
-            .find_map(|e| match e.event {
-                Event::AuctionWon { amount, .. } => Some(amount),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(amount, 1, "a sole bidder pays only the $1 minimum");
+        assert_eq!(
+            last_auction_price(&game),
+            Some(1),
+            "a sole bidder pays only the $1 minimum"
+        );
     }
 
     #[test]
@@ -1332,16 +1301,11 @@ mod tests {
             Some(0),
             "the higher bidder wins"
         );
-        let amount = game
-            .log
-            .iter()
-            .rev()
-            .find_map(|e| match e.event {
-                Event::AuctionWon { amount, .. } => Some(amount),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(amount, 60, "pays the runner-up's bid, not its own");
+        assert_eq!(
+            last_auction_price(&game),
+            Some(60),
+            "pays the runner-up's bid, not its own"
+        );
     }
 
     #[test]

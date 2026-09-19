@@ -6,10 +6,19 @@
 //! design.
 //!
 //! Every cash-affecting event already carries the amount that was *supposed*
-//! to move; the one subtlety is that a payment immediately followed by that
-//! payer's `Bankrupted` event never fully went through (see `Event::RentPaid`
-//! and `Event::Bankrupted`'s doc comments) — `apply_debt` below is the single
-//! place that accounts for that.
+//! to move; the one subtlety is that a payment the payer can't cover never
+//! fully went through, and ends in their bankruptcy instead (see
+//! `Event::RentPaid` and `Event::Bankrupted`'s doc comments) — `apply_debt`
+//! below is the single place that accounts for that, mirroring
+//! `Game::charge`'s own raise-cash-then-decide logic.
+//!
+//! Known gap: with `RuleSet::free_parking_pot` enabled, the pot's payout
+//! (`Game::resolve_landing`'s `SpaceKind::FreeParking` arm, which calls
+//! `pay_from_bank`) emits no event of its own, so it can't be replayed from
+//! the log — reconstructed cash (and everything derived from it: net worth,
+//! and `apply_debt`'s affordability decisions) drifts low for any player who
+//! ever collects the pot. Every metric here is exact under the official rule
+//! (`free_parking_pot: false`, the default).
 
 use serde::Serialize;
 
@@ -27,11 +36,13 @@ pub struct CashFlowBreakdown {
     pub rent_received: i64,
     pub tax_paid: i64,
     /// Net of every Chance/Community Chest cash effect (positive = net
-    /// receipts). The two "pay/collect from every other player" cards are
-    /// folded in at their face value even on the rare turn one of those
-    /// per-player payments is cut short by a bankruptcy — a cash-flow
-    /// *breakdown* is a display aggregate, not the exact-cash invariant
-    /// (see `crates/engine/tests/property_invariants.rs` for that).
+    /// receipts), counted from both sides: the two "pay/collect from every
+    /// other player" cards move cash for the drawer *and* for each other
+    /// player, and each of those per-player transfers is counted only if it
+    /// actually went through (an already-bankrupt player is never charged,
+    /// and a payment that ends in the payer's bankruptcy never reaches the
+    /// payee — what the payee gets instead arrives via `Event::Bankrupted`
+    /// and isn't attributed to any cash-flow category).
     pub card_net: i64,
     pub go_salary_collected: i64,
 }
@@ -90,6 +101,16 @@ pub struct PerGameStats {
     pub property_roi: Vec<PropertyRoi>,
 }
 
+/// What `Ledger::apply_debt` resolved for one debt: how many envelopes after
+/// `start` it consumed (so the caller's cursor can skip straight past them)
+/// and whether the debt was actually settled — a payer who still can't cover
+/// it after raising cash goes bankrupt instead, and the payee never receives
+/// this `amount` (they receive whatever was left, via `Event::Bankrupted`).
+struct DebtOutcome {
+    consumed: usize,
+    paid: bool,
+}
+
 /// The running cash/building state `compute_stats` reconstructs by replaying
 /// events — bundled into one type so `apply_debt` (which needs all three)
 /// doesn't have to take them as separate parameters.
@@ -105,14 +126,25 @@ impl Ledger<'_> {
     /// — so a `Bankrupted` event for `payer` isn't necessarily the very next
     /// envelope, it can follow a run of `payer`'s own `Mortgaged`/`HouseSold`
     /// events first. This applies those events' cash and house-count effects
-    /// itself and reports how many envelopes after `start` it consumed, so
-    /// the caller's cursor can skip straight past them (stopping just
-    /// *before* a trailing `Bankrupted` envelope, which the caller's own
+    /// itself and reports how many envelopes it consumed, stopping just
+    /// *before* any trailing `Bankrupted` envelope (which the caller's own
     /// `Event::Bankrupted` handling applies uniformly regardless of which
-    /// debt triggered it). If no bankruptcy follows the raise-cash run, the
-    /// debt is paid in full here; otherwise this leaves `payer`'s cash
-    /// exactly as the raise-cash run left it, for the caller to zero and
-    /// hand off.
+    /// debt triggered it).
+    ///
+    /// The decision of whether the debt went through mirrors `Game::charge`
+    /// exactly: raise cash only while `payer` still can't cover `amount`,
+    /// then pay if and only if they now can. Peeking ahead for a trailing
+    /// `Bankrupted` envelope instead would be wrong, because one debt event
+    /// can be followed by *several* of `payer`'s consecutive raise-cash runs
+    /// — `CardEffect::PayEachPlayer` charges the same player once per
+    /// recipient, so an earlier recipient's successful payment can sit in
+    /// the log immediately before the run that ends in bankruptcy, with
+    /// nothing separating the two. Consuming only up to the point the debt
+    /// becomes affordable keeps each charge's decision independent; any
+    /// raise-cash envelope left over (the engine applies every action a
+    /// strategy returns, which can overshoot) is picked up either by the
+    /// next charge or by the caller's own bare `Mortgaged`/`HouseSold` arms,
+    /// which apply the identical cash and house-count effects.
     fn apply_debt(
         &mut self,
         events: &[EventEnvelope],
@@ -120,9 +152,10 @@ impl Ledger<'_> {
         payer: usize,
         amount: u32,
         payee: Option<usize>,
-    ) -> usize {
+    ) -> DebtOutcome {
         let mut peek = start;
-        while let Some(env) = events.get(peek) {
+        while self.cash[payer] < amount as i64 {
+            let Some(env) = events.get(peek) else { break };
             if env.player != payer {
                 break;
             }
@@ -143,18 +176,17 @@ impl Ledger<'_> {
             }
             peek += 1;
         }
-        let consumed = peek - start;
-        let bankruptcy_follows = matches!(
-            events.get(peek),
-            Some(env) if env.player == payer && matches!(env.event, Event::Bankrupted { .. })
-        );
-        if !bankruptcy_follows {
+        let paid = self.cash[payer] >= amount as i64;
+        if paid {
             self.cash[payer] -= amount as i64;
             if let Some(p) = payee {
                 self.cash[p] += amount as i64;
             }
         }
-        consumed
+        DebtOutcome {
+            consumed: peek - start,
+            paid,
+        }
     }
 }
 
@@ -327,24 +359,30 @@ pub fn compute_stats(
                 cash[env.player] += (price / 2) as i64;
             }
             Event::TaxPaid { amount, .. } => {
-                skip = Ledger {
+                let outcome = Ledger {
                     cash: &mut cash,
                     houses: &mut houses,
                     board,
                 }
                 .apply_debt(events, i + 1, env.player, *amount, None);
-                cash_flow[env.player].tax_paid += *amount as i64;
+                skip = outcome.consumed;
+                if outcome.paid {
+                    cash_flow[env.player].tax_paid += *amount as i64;
+                }
             }
             Event::RentPaid { to, amount, space } => {
-                skip = Ledger {
+                let outcome = Ledger {
                     cash: &mut cash,
                     houses: &mut houses,
                     board,
                 }
                 .apply_debt(events, i + 1, env.player, *amount, Some(*to));
-                cash_flow[env.player].rent_paid += *amount as i64;
-                cash_flow[*to].rent_received += *amount as i64;
-                rent_collected[*space] += *amount;
+                skip = outcome.consumed;
+                if outcome.paid {
+                    cash_flow[env.player].rent_paid += *amount as i64;
+                    cash_flow[*to].rent_received += *amount as i64;
+                    rent_collected[*space] += *amount;
+                }
             }
             Event::JailDecision {
                 action: JailAction::PayFine,
@@ -355,7 +393,8 @@ pub fn compute_stats(
                     houses: &mut houses,
                     board,
                 }
-                .apply_debt(events, i + 1, env.player, rules.jail_fine, None);
+                .apply_debt(events, i + 1, env.player, rules.jail_fine, None)
+                .consumed;
             }
             Event::CardDrawn { effect, .. } => match effect {
                 CardEffect::CollectFromBank(amount) => {
@@ -363,13 +402,16 @@ pub fn compute_stats(
                     cash_flow[env.player].card_net += *amount as i64;
                 }
                 CardEffect::PayBank(amount) => {
-                    skip = Ledger {
+                    let outcome = Ledger {
                         cash: &mut cash,
                         houses: &mut houses,
                         board,
                     }
                     .apply_debt(events, i + 1, env.player, *amount, None);
-                    cash_flow[env.player].card_net -= *amount as i64;
+                    skip = outcome.consumed;
+                    if outcome.paid {
+                        cash_flow[env.player].card_net -= *amount as i64;
+                    }
                 }
                 CardEffect::CollectFromEachPlayer(amount) => {
                     let mut offset = 1;
@@ -377,7 +419,7 @@ pub fn compute_stats(
                         if other == env.player || is_bankrupt {
                             continue;
                         }
-                        offset += Ledger {
+                        let outcome = Ledger {
                             cash: &mut cash,
                             houses: &mut houses,
                             board,
@@ -389,20 +431,28 @@ pub fn compute_stats(
                             *amount,
                             Some(env.player),
                         );
+                        offset += outcome.consumed;
+                        if outcome.paid {
+                            cash_flow[env.player].card_net += *amount as i64;
+                            cash_flow[other].card_net -= *amount as i64;
+                        }
                     }
                     skip = offset - 1;
-                    cash_flow[env.player].card_net += *amount as i64 * (n as i64 - 1);
                 }
                 CardEffect::PayEachPlayer(amount) => {
                     let mut offset = 1;
                     for (other, &is_bankrupt) in bankrupt.iter().enumerate() {
-                        if bankrupt[env.player] {
-                            break;
-                        }
                         if other == env.player || is_bankrupt {
                             continue;
                         }
-                        offset += Ledger {
+                        // No explicit stop once the payer goes bankrupt
+                        // part-way through the card: `apply_debt`'s own
+                        // affordability check already refuses every
+                        // remaining recipient (a bankruptcy only happens
+                        // because the payer was short, and the `Bankrupted`
+                        // envelope sitting at the cursor ends the raise-cash
+                        // run), which is what the engine's own `break` does.
+                        let outcome = Ledger {
                             cash: &mut cash,
                             houses: &mut houses,
                             board,
@@ -414,9 +464,13 @@ pub fn compute_stats(
                             *amount,
                             Some(other),
                         );
+                        offset += outcome.consumed;
+                        if outcome.paid {
+                            cash_flow[env.player].card_net -= *amount as i64;
+                            cash_flow[other].card_net += *amount as i64;
+                        }
                     }
                     skip = offset - 1;
-                    cash_flow[env.player].card_net -= *amount as i64 * (n as i64 - 1);
                 }
                 CardEffect::PropertyRepairAssessment { .. }
                 | CardEffect::AdvanceTo(_)
@@ -597,13 +651,14 @@ mod tests {
             seq: 1,
             event: Event::Bankrupted { payee: Some(1) },
         }];
-        let consumed = Ledger {
+        let outcome = Ledger {
             cash: &mut cash,
             houses: &mut houses,
             board: &board,
         }
         .apply_debt(&events, 0, 0, 100, Some(1));
-        assert_eq!(consumed, 0); // no raise-cash events to skip; the caller visits Bankrupted itself
+        assert_eq!(outcome.consumed, 0); // no raise-cash events to skip; the caller visits Bankrupted itself
+        assert!(!outcome.paid);
         assert_eq!(cash, vec![30, 500]);
     }
 
@@ -612,13 +667,75 @@ mod tests {
         let mut cash = vec![200i64, 500];
         let mut houses = vec![0u8; BOARD_SIZE];
         let board = Board::standard();
-        let consumed = Ledger {
+        let outcome = Ledger {
             cash: &mut cash,
             houses: &mut houses,
             board: &board,
         }
         .apply_debt(&[], 0, 0, 100, Some(1));
-        assert_eq!(consumed, 0);
+        assert_eq!(outcome.consumed, 0);
+        assert!(outcome.paid);
         assert_eq!(cash, vec![100, 600]);
+    }
+
+    /// Regression: `CardEffect::PayEachPlayer` charges the same player once
+    /// per recipient, so a *successful* payment can sit in the log directly
+    /// before the charge that bankrupts them. Deciding "was this paid?" by
+    /// peeking ahead for a `Bankrupted` envelope silently dropped every one
+    /// of those earlier payments.
+    #[test]
+    fn a_payment_before_a_later_bankruptcy_in_the_same_card_still_goes_through() {
+        let mut cash = vec![120i64, 0, 0, 0];
+        let mut houses = vec![0u8; BOARD_SIZE];
+        let board = Board::standard();
+        // Player 0 draws "pay each player $50": pays 1 and 2, then can't pay
+        // 3 and is bankrupted to them — with nothing between the card and
+        // the `Bankrupted` envelope.
+        let events = [EventEnvelope {
+            turn: 1,
+            player: 0,
+            seq: 1,
+            event: Event::Bankrupted { payee: Some(3) },
+        }];
+        let mut outcomes = Vec::new();
+        for payee in 1..4 {
+            let outcome = Ledger {
+                cash: &mut cash,
+                houses: &mut houses,
+                board: &board,
+            }
+            .apply_debt(&events, 0, 0, 50, Some(payee));
+            assert_eq!(outcome.consumed, 0);
+            outcomes.push(outcome.paid);
+        }
+        assert_eq!(outcomes, vec![true, true, false]);
+        assert_eq!(cash, vec![20, 50, 50, 0]);
+    }
+
+    /// The raise-cash run is consumed only up to the point the debt becomes
+    /// affordable; anything the strategy over-sold is left for the caller's
+    /// own bare `Mortgaged`/`HouseSold` arms, which apply the same credit.
+    #[test]
+    fn apply_debt_consumes_only_as_much_of_the_raise_cash_run_as_it_needs() {
+        let board = Board::standard();
+        // Mediterranean Avenue (space 1) is $60, so mortgaging it raises $30.
+        let mortgage = |seq| EventEnvelope {
+            turn: 1,
+            player: 0,
+            seq,
+            event: Event::Mortgaged { space: 1 },
+        };
+        let events = [mortgage(1), mortgage(2), mortgage(3)];
+        let mut cash = vec![10i64, 0];
+        let mut houses = vec![0u8; BOARD_SIZE];
+        let outcome = Ledger {
+            cash: &mut cash,
+            houses: &mut houses,
+            board: &board,
+        }
+        .apply_debt(&events, 0, 0, 60, Some(1));
+        assert!(outcome.paid);
+        assert_eq!(outcome.consumed, 2); // 10 + 30 + 30 = 70 >= 60; the third is left behind
+        assert_eq!(cash, vec![10, 60]);
     }
 }

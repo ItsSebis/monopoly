@@ -84,8 +84,15 @@ fn rule_set() -> impl Strategy<Value = RuleSet> {
 /// `start` it consumed, so the caller's cursor can skip straight past them —
 /// stopping *before* a trailing `Bankrupted` envelope, which the caller's own
 /// `Event::Bankrupted` handling applies uniformly regardless of which debt
-/// triggered it. If no bankruptcy follows the raise-cash run, the debt is
-/// paid in full here.
+/// triggered it.
+///
+/// Whether the debt went through is decided the way the engine decides it:
+/// raise cash only while `payer` still can't cover `amount`, then pay if and
+/// only if they now can. Simply looking ahead for a `Bankrupted` envelope
+/// would be wrong — `CardEffect::PayEachPlayer` charges the same player once
+/// per recipient, so an earlier recipient's *successful* payment can sit in
+/// the log directly before the charge that bankrupts them, with nothing in
+/// between to separate the two raise-cash runs.
 fn settle(
     cash: &mut [i64],
     board: &Board,
@@ -96,7 +103,8 @@ fn settle(
     payee: Option<usize>,
 ) -> usize {
     let mut peek = start;
-    while let Some(env) = events.get(peek) {
+    while cash[payer] < amount as i64 {
+        let Some(env) = events.get(peek) else { break };
         if env.player != payer {
             break;
         }
@@ -111,28 +119,22 @@ fn settle(
         }
         peek += 1;
     }
-    let consumed = peek - start;
-    let bankruptcy_follows = matches!(
-        events.get(peek),
-        Some(env) if env.player == payer && matches!(env.event, Event::Bankrupted { .. })
-    );
-    if !bankruptcy_follows {
+    if cash[payer] >= amount as i64 {
         cash[payer] -= amount as i64;
         if let Some(p) = payee {
             cash[p] += amount as i64;
         }
     }
-    consumed
+    peek - start
 }
 
 /// Replays every cash-affecting event independently and returns the final
 /// cash it implies for each player. Walks the log with an explicit cursor
 /// (rather than a plain iteration) because `settle` above can consume more
-/// than one envelope per debt. None of the built-in strategies ever sell a
-/// house *outside* the raise-cash flow (only `decide_mortgage`'s
-/// `SellHouse`, never `decide_build`'s, is ever produced — see
-/// `crates/engine/src/strategies/mod.rs`), so every `Mortgaged`/`HouseSold`
-/// envelope is always consumed by `settle` above and never seen bare here.
+/// than one envelope per debt. It can also consume *fewer* than the engine's
+/// `raise_cash` emitted — it stops as soon as the debt is affordable, while
+/// the engine applies every action the strategy returned — so leftover
+/// raise-cash envelopes are handled bare below, with the identical credit.
 fn reconcile_final_cash(
     board: &Board,
     rules: &RuleSet,
@@ -159,6 +161,12 @@ fn reconcile_final_cash(
             Event::AuctionWon { player, amount, .. } => cash[*player] -= *amount as i64,
             Event::HouseBuilt { space } => {
                 cash[env.player] -= board.space(*space).house_cost().unwrap_or(0) as i64;
+            }
+            Event::HouseSold { space } => {
+                cash[env.player] += (board.space(*space).house_cost().unwrap_or(0) / 2) as i64;
+            }
+            Event::Mortgaged { space } => {
+                cash[env.player] += (board.space(*space).price().unwrap_or(0) / 2) as i64;
             }
             Event::TaxPaid { amount, .. } => {
                 skip = settle(&mut cash, board, events, i + 1, env.player, *amount, None);
@@ -214,12 +222,13 @@ fn reconcile_final_cash(
                 CardEffect::PayEachPlayer(amount) => {
                     let mut offset = 1;
                     for (other, &is_bankrupt) in bankrupt.iter().enumerate() {
-                        if bankrupt[env.player] {
-                            break;
-                        }
                         if other == env.player || is_bankrupt {
                             continue;
                         }
+                        // No explicit stop once the payer goes bankrupt
+                        // part-way through the card — `settle`'s own
+                        // affordability check refuses every remaining
+                        // recipient, which is what the engine's `break` does.
                         offset += settle(
                             &mut cash,
                             board,
@@ -253,6 +262,50 @@ fn reconcile_final_cash(
         i += 1 + skip;
     }
     cash
+}
+
+/// A seeded companion to `cash_reconciles_against_the_full_event_log` below,
+/// pinning the one scenario random generation is too sparse to find
+/// reliably: this game draws "chairman of the board"
+/// (`CardEffect::PayEachPlayer`), and the drawer pays two opponents
+/// successfully before being bankrupted by the third — with the `Bankrupted`
+/// envelope sitting immediately after the `CardDrawn` one, nothing in
+/// between. Deciding whether a payment went through by peeking ahead for
+/// that envelope dropped all three payments; only about one game in 600
+/// hits it, so 48 proptest cases caught it roughly 7% of the time.
+#[test]
+fn a_bankruptcy_part_way_through_pay_each_player_still_pays_the_earlier_players() {
+    let rules = RuleSet::default();
+    let players: Vec<PlayerConfig> = ["buy_all", "buy_good", "buy_bad", "buy_none"]
+        .iter()
+        .map(|s| PlayerConfig {
+            name: s.to_string(),
+            strategy: s.to_string(),
+        })
+        .collect();
+    let board = Board::standard();
+    let mut game = Game::new(rules.clone(), &players, 4).unwrap();
+    let result = game.run_to_completion();
+
+    let drawn_then_bankrupt = result.events.windows(2).any(|w| {
+        matches!(
+            w[0].event,
+            Event::CardDrawn {
+                effect: CardEffect::PayEachPlayer(_),
+                ..
+            }
+        ) && matches!(w[1].event, Event::Bankrupted { .. })
+            && w[0].player == w[1].player
+    });
+    assert!(
+        drawn_then_bankrupt,
+        "seed 4 no longer reproduces the scenario this test exists for"
+    );
+
+    let reconciled = reconcile_final_cash(&board, &rules, players.len(), &result.events);
+    for (i, player) in result.final_state.players.iter().enumerate() {
+        assert_eq!(reconciled[i], player.cash, "player {i}");
+    }
 }
 
 proptest! {

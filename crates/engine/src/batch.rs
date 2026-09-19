@@ -2,17 +2,27 @@
 //! folded into win-rate, head-to-head, ROI, and distribution statistics
 //! (`docs/analysis-and-metrics.md`'s batch-only metrics). Per
 //! `docs/architecture.md`'s determinism-as-storage-optimization, only each
-//! game's `(seed, winner, turns)` summary is kept — the full event log and
-//! `PerGameStats` are discarded as soon as a game's numbers are folded into
-//! the aggregate, and can always be regenerated later from `(RuleSet,
-//! players, seed)`.
+//! game's `(seed, winner, turns)` summary survives the call — the full event
+//! log is dropped as soon as that game's `PerGameStats` is computed, and
+//! everything can always be regenerated later from `(RuleSet, players,
+//! seed)`.
+//!
+//! Caveat, and the main thing to fix before running very large batches: the
+//! per-game `PerGameStats` are *not* folded in and dropped one at a time —
+//! `run_batch` collects all of them up front and only then calls
+//! `aggregate`. `PerGameStats::net_worth_by_turn` holds one heap-allocated
+//! row per turn, and an uncapped game can reach `SAFETY_MAX_TURNS`, so peak
+//! memory grows linearly with the batch: roughly 0.7 GB per 1,000 four-player
+//! games with no `RuleSet::max_turns` set. Setting `max_turns` bounds it;
+//! folding each game's contribution inside the `par_iter` (nothing in
+//! `aggregate` needs more than the *last* net-worth row) would remove it.
 
 use std::collections::BTreeMap;
 
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::board::Board;
+use crate::board::{Board, BOARD_SIZE};
 use crate::config::PlayerConfig;
 use crate::game::{ConfigError, Game};
 use crate::rules::RuleSet;
@@ -62,11 +72,17 @@ impl DistributionSummary {
 #[derive(Debug, Clone, Serialize)]
 pub struct AggregateStats {
     pub games: usize,
+    /// Wins per *seat*, not per game: a strategy occupying two of four seats
+    /// is counted twice per game in the denominator, so its rate stays
+    /// comparable to a strategy holding a single seat.
     pub win_rate_by_strategy: BTreeMap<String, f64>,
     /// `head_to_head[a][b]`: how often the player running `a` beat the
     /// player running `b` in games where one of the two of them won (a game
     /// won by a third strategy doesn't resolve this specific pairing, so it
-    /// isn't counted either way — see `aggregate`).
+    /// isn't counted either way — see `aggregate`). The diagonal
+    /// `head_to_head[a][a]` only exists when two seats share a strategy, and
+    /// is 50% by construction: each mirror pairing records both a win and a
+    /// loss in the same cell, so its `total` counts each such game twice.
     pub head_to_head: BTreeMap<String, BTreeMap<String, HeadToHead>>,
     /// Total rent collected divided by total cost basis, across every
     /// property each strategy owned at the end of its games.
@@ -137,7 +153,7 @@ fn aggregate(
     let mut game_length = Vec::with_capacity(per_game.len());
     let mut bankruptcy_turns = Vec::new();
     let mut dice_roll_counts = [0u64; 11];
-    let mut landing_counts = vec![0u64; 40];
+    let mut landing_counts = vec![0u64; BOARD_SIZE];
     let mut final_net_worth: BTreeMap<String, Vec<f64>> = BTreeMap::new();
 
     for (summary, stats) in per_game {

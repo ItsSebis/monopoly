@@ -13,6 +13,12 @@ use crate::building::can_build;
 use crate::state::GameView;
 use crate::strategy::{BuildAction, JailAction, MortgageAction, Strategy};
 
+/// Every registered strategy id, in the same order `make_strategy` matches
+/// them — the one source of truth for anything that needs to list them (e.g.
+/// the browser's strategy dropdown in Phase 5), instead of a hand-maintained
+/// duplicate.
+pub const STRATEGY_IDS: &[&str] = &["buy_all", "buy_good", "buy_bad", "buy_none"];
+
 /// Construct a built-in strategy by its registered id (used by config files
 /// and the CLI). `None` for an unrecognized id, so callers can report a
 /// clear config error instead of panicking.
@@ -154,4 +160,19 @@ fn raise_cash_cheapest_first(
         }
     }
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_strategy_id_round_trips_through_make_strategy() {
+        for &id in STRATEGY_IDS {
+            assert!(
+                make_strategy(id).is_some(),
+                "STRATEGY_IDS lists {id}, but make_strategy doesn't recognize it"
+            );
+        }
+    }
 }

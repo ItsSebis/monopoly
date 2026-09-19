@@ -27,8 +27,25 @@ function describeCardEffect(effect: CardEffect): string {
   return `pay $${effect.PropertyRepairAssessment.per_house}/house, $${effect.PropertyRepairAssessment.per_hotel}/hotel`;
 }
 
+function playerName(playerNames: string[], i: number): string {
+  return playerNames[i] ?? `Player ${i}`;
+}
+
+/** Formats a `GameEnded` payload on its own, so callers that only have the
+ * winner/turns (not a full `EventEnvelope`) - e.g. main.ts's winner banner,
+ * shown once playback has drained rather than in response to a real event -
+ * can reuse the same wording `formatEvent` uses for an actual `GameEnded`. */
+export function formatGameEnded(
+  payload: { winner: number | null; turns: number },
+  playerNames: string[],
+): string {
+  return payload.winner === null
+    ? `Game ended after ${payload.turns} turns with no winner`
+    : `${playerName(playerNames, payload.winner)} won after ${payload.turns} turns!`;
+}
+
 export function formatEvent(env: EventEnvelope, playerNames: string[]): string {
-  const name = (i: number) => playerNames[i] ?? `Player ${i}`;
+  const name = (i: number) => playerName(playerNames, i);
   const actor = name(env.player);
   const e = env.event;
 
@@ -81,8 +98,6 @@ export function formatEvent(env: EventEnvelope, playerNames: string[]): string {
         ? `${actor} went bankrupt to the bank`
         : `${actor} went bankrupt to ${name(e.payload.payee)}`;
     case "GameEnded":
-      return e.payload.winner === null
-        ? `Game ended after ${e.payload.turns} turns with no winner`
-        : `${name(e.payload.winner)} won after ${e.payload.turns} turns!`;
+      return formatGameEnded(e.payload, playerNames);
   }
 }

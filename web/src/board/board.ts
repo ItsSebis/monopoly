@@ -87,11 +87,10 @@ export class BoardView {
 
   private moveToken(player: number, space: number): void {
     const token = document.querySelector<HTMLElement>(`.token[data-player="${player}"]`);
-    if (token) {
-      this.tokenContainers[space].appendChild(token);
-    }
-    // If the token isn't found (e.g. before the first renderState), the next
-    // full sync will place it correctly - nothing more to do here.
+    // Not found before the first `renderState()` creates the tokens - the
+    // next full sync will place it correctly, so there's nothing to do here.
+    if (!token) return;
+    this.tokenContainers[space].appendChild(token);
   }
 }
 

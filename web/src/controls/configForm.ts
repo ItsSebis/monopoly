@@ -9,7 +9,9 @@ export interface StartPayload {
   seed: number;
 }
 
-/** Pure mapping, exported for unit testing independent of the DOM. */
+// The next three functions are pure `FormData` -> engine-shape mappings,
+// exported so their tests don't need a DOM.
+
 export function buildIncomeTaxMode(data: FormData): IncomeTaxMode {
   const flatAmount = Number(data.get("income_tax_flat_amount"));
   const rate = Number(data.get("income_tax_rate"));
@@ -23,7 +25,6 @@ export function buildIncomeTaxMode(data: FormData): IncomeTaxMode {
   }
 }
 
-/** Pure mapping, exported for unit testing independent of the DOM. */
 export function buildRuleSet(data: FormData): RuleSet {
   return {
     starting_cash: Number(data.get("starting_cash")),
@@ -38,7 +39,6 @@ export function buildRuleSet(data: FormData): RuleSet {
   };
 }
 
-/** Pure mapping, exported for unit testing independent of the DOM. */
 export function buildPlayers(rows: { name: string; strategy: string }[]): PlayerConfig[] {
   return rows.map((row) => ({ name: row.name, strategy: row.strategy }));
 }

@@ -2,21 +2,28 @@ import "./style.css";
 import { BoardView } from "./board/board";
 import { ConfigForm, type StartPayload } from "./controls/configForm";
 import { PlaybackController } from "./controls/playback";
-import { formatEvent } from "./eventLog";
+import { formatEvent, formatGameEnded } from "./eventLog";
 import type { EventEnvelope, GameState } from "./types";
 import type { WorkerResponse } from "./worker/simWorker";
 
-const configPanel = document.getElementById("config-panel")!;
-const gamePanel = document.getElementById("game-panel")!;
-const boardContainer = document.getElementById("board")!;
-const playerPanel = document.getElementById("player-panel")!;
-const eventLogEl = document.getElementById("event-log")!;
-const turnIndicator = document.getElementById("turn-indicator")!;
-const gameOverBanner = document.getElementById("game-over-banner")!;
-const playPauseButton = document.getElementById("play-pause-button") as HTMLButtonElement;
-const stepButton = document.getElementById("step-button") as HTMLButtonElement;
-const speedSelect = document.getElementById("speed-select") as HTMLSelectElement;
-const newGameButton = document.getElementById("new-game-button") as HTMLButtonElement;
+/** All ids below are static markup in index.html, so the lookup is
+ * infallible in practice - a single generic cast here beats repeating `!`
+ * or `as HTMLXxxElement` at every call site. */
+function el<T extends HTMLElement = HTMLElement>(id: string): T {
+  return document.getElementById(id) as T;
+}
+
+const configPanel = el("config-panel");
+const gamePanel = el("game-panel");
+const boardContainer = el("board");
+const playerPanel = el("player-panel");
+const eventLogEl = el("event-log");
+const turnIndicator = el("turn-indicator");
+const gameOverBanner = el("game-over-banner");
+const playPauseButton = el<HTMLButtonElement>("play-pause-button");
+const stepButton = el<HTMLButtonElement>("step-button");
+const speedSelect = el<HTMLSelectElement>("speed-select");
+const newGameButton = el<HTMLButtonElement>("new-game-button");
 
 const board = new BoardView(boardContainer);
 let worker: Worker;
@@ -30,7 +37,7 @@ function newWorker(): Worker {
   return w;
 }
 
-const configForm = new ConfigForm(document.getElementById("config-form") as HTMLFormElement, startGame);
+const configForm = new ConfigForm(el<HTMLFormElement>("config-form"), startGame);
 
 worker = newWorker();
 
@@ -88,18 +95,7 @@ function onTurnBoundary(state: GameState): void {
 function maybeShowGameOver(): void {
   if (!pendingGameOver || !playback?.isDrained()) return;
   gameOverBanner.hidden = false;
-  gameOverBanner.textContent = formatEvent(
-    {
-      turn: 0,
-      player: 0,
-      seq: 0,
-      event: {
-        type: "GameEnded",
-        payload: { winner: pendingGameOver.winner, turns: pendingGameOver.turns },
-      },
-    },
-    playerNames,
-  );
+  gameOverBanner.textContent = formatGameEnded(pendingGameOver, playerNames);
   pendingGameOver = null;
 }
 

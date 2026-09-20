@@ -48,6 +48,7 @@ Core event types (see [data-model.md](./data-model.md#event-log-entry) for the e
 | `HouseBuilt` / `HouseSold` | Building changes |
 | `Mortgaged` | A property is mortgaged (one-way in Phase 2 — see [game-rules.md](./game-rules.md#mortgaging)) |
 | `Bankrupted` | A player goes bankrupt, and to whom (a player, or the bank if `None`) |
+| `TradeExecuted` / `TradeDeclined` | A proposed trade (`RuleSet.trading_enabled`, Phase 7) the counterparty accepted or declined — see [game-rules.md](./game-rules.md#trading) |
 | `GameEnded` | One player remains; includes the winner and final standings |
 
 ## The `Strategy` trait
@@ -61,11 +62,12 @@ pub trait Strategy {
     fn decide_build(&mut self, view: &GameView, player: usize) -> Vec<BuildAction>; // build/sell house(s), once per turn
     fn decide_mortgage(&mut self, view: &GameView, player: usize, shortfall: u32) -> Vec<MortgageAction>; // mortgage and/or sell houses
     fn decide_auction_bid(&mut self, view: &GameView, player: usize, space: usize) -> Option<u32>; // None/0 = abstain
-    // Phase 7: fn decide_trade(&mut self, view: &GameView, player: usize) -> Option<TradeOffer>;
+    fn decide_trade(&mut self, view: &GameView, player: usize) -> Option<TradeOffer>; // at most one proposal per turn, only when RuleSet.trading_enabled
+    fn decide_trade_response(&mut self, view: &GameView, player: usize, offer: &TradeOffer) -> bool; // asks the counterparty whether to accept
 }
 ```
 
-`player` is passed explicitly to every hook rather than read off `view.state.current_player` — `decide_auction_bid` asks every player, not just the current one, so that shortcut doesn't hold in general. There's no `UseCard` variant on `JailAction`: a held "Get Out of Jail Free" card is always played automatically by the engine before `decide_jail_action` is even called (see [game-rules.md](./game-rules.md#jail)), since using it is never worse than the alternatives. Auction bidding is a single sealed round, not live/iterative — `decide_auction_bid` doesn't see anyone else's bid (see [game-rules.md](./game-rules.md#auctions)).
+`player` is passed explicitly to every hook rather than read off `view.state.current_player` — `decide_auction_bid` asks every player, not just the current one, so that shortcut doesn't hold in general. There's no `UseCard` variant on `JailAction`: a held "Get Out of Jail Free" card is always played automatically by the engine before `decide_jail_action` is even called (see [game-rules.md](./game-rules.md#jail)), since using it is never worse than the alternatives. Auction bidding is a single sealed round, not live/iterative — `decide_auction_bid` doesn't see anyone else's bid (see [game-rules.md](./game-rules.md#auctions)). `decide_trade_response` exists for the same reason `decide_auction_bid` asks every player: a trade means nothing without the other side's consent — see [game-rules.md](./game-rules.md#trading) for why this ended up as two hooks rather than the single one originally sketched here.
 
 `GameView` is a read-only projection of the current `GameState` (see [data-model.md](./data-model.md#gamestate)) — a strategy can see the whole board, every player's holdings and cash, and its own history, but cannot mutate anything directly; all changes flow back through the engine, which is what keeps the event log complete and authoritative.
 

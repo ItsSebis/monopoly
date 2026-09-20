@@ -1,7 +1,9 @@
 use super::{cash_above_reserve, raise_cash_cheapest_first};
 use crate::board::SpaceKind;
 use crate::state::GameView;
-use crate::strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};
+use crate::strategy::{
+    BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy, TradeOffer,
+};
 
 /// The smallest reserve of the buying strategies — Buy Bad overspends
 /// relative to its cash position (see docs/player-strategies.md).
@@ -50,5 +52,21 @@ impl Strategy for BuyBad {
         let overbid_factor = (0.20 - ratio).max(0.0) * 4.0;
         let bid = (price as f64 * (1.0 + overbid_factor)) as u32;
         Some(bid.min(cash_above_reserve(view, player, RESERVE)?))
+    }
+
+    /// Never trades - its thin cash position and low-value holdings (see
+    /// `decide_build`'s doc comment) mean there's nothing worth proposing or
+    /// accepting.
+    fn decide_trade(&mut self, _view: &GameView, _player: usize) -> Option<TradeOffer> {
+        None
+    }
+
+    fn decide_trade_response(
+        &mut self,
+        _view: &GameView,
+        _player: usize,
+        _offer: &TradeOffer,
+    ) -> bool {
+        false
     }
 }

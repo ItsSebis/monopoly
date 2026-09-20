@@ -41,21 +41,21 @@ fn players_config() -> impl Strategy<Value = Vec<PlayerConfig>> {
 /// doubled landing-on-GO payment apart from a normal pass-through would mean
 /// cross-referencing the preceding `Move` event rather than just replaying
 /// `PassGo` in isolation — covered by a dedicated `game.rs` unit test
-/// instead. `trading_enabled` is left off too: a trade's property/cash swap
-/// is a different shape of event than this reconciler's additive
-/// credits/debits, and is likewise covered by dedicated `game.rs` unit tests.
-/// `unlimited_houses` is left off as well: `bank_house_and_hotel_supply_
-/// always_balances` below asserts the bank's fixed 32/12 supply is always
-/// exactly conserved, which `unlimited_houses` deliberately breaks by design
-/// (see `game.rs`'s `try_build`) — fuzzing it here would fight the very
-/// invariant that test checks, rather than test it; covered instead by
-/// dedicated `game.rs` unit tests.
+/// instead. `unlimited_houses` is left off as well:
+/// `bank_house_and_hotel_supply_always_balances` below asserts the bank's
+/// fixed 32/12 supply is always exactly conserved, which `unlimited_houses`
+/// deliberately breaks by design (see `game.rs`'s `try_build`) — fuzzing it
+/// here would fight the very invariant that test checks, rather than test
+/// it; covered instead by dedicated `game.rs` unit tests. `trading_enabled`
+/// *is* fuzzed - `reconcile_final_cash` below has its own `TradeExecuted`
+/// arm, independent of `stats.rs`'s.
 fn rule_set() -> impl Strategy<Value = RuleSet> {
     (
         500u32..3000,
         50u32..400,
         10u32..100,
         10u32..150,
+        any::<bool>(),
         any::<bool>(),
         any::<bool>(),
         0u8..3,
@@ -68,6 +68,7 @@ fn rule_set() -> impl Strategy<Value = RuleSet> {
                 luxury_tax,
                 even_build_rule,
                 auction_on_decline,
+                trading_enabled,
                 tax_mode,
             )| {
                 let income_tax_mode = match tax_mode {
@@ -87,7 +88,7 @@ fn rule_set() -> impl Strategy<Value = RuleSet> {
                     max_turns: Some(300),
                     double_go_salary: false,
                     unlimited_houses: false,
-                    trading_enabled: false,
+                    trading_enabled,
                 }
             },
         )
@@ -267,6 +268,17 @@ fn reconcile_final_cash(
                     cash[*p] += remaining;
                 }
                 bankrupt[env.player] = true;
+            }
+            Event::TradeExecuted {
+                to,
+                offered_cash,
+                requested_cash,
+                ..
+            } => {
+                cash[env.player] -= *offered_cash as i64;
+                cash[*to] += *offered_cash as i64;
+                cash[*to] -= *requested_cash as i64;
+                cash[env.player] += *requested_cash as i64;
             }
             _ => {}
         }

@@ -1,6 +1,8 @@
 use super::patient_jail_action;
 use crate::state::GameView;
-use crate::strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};
+use crate::strategy::{
+    BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy, TradeOffer,
+};
 
 /// Never buys; used as a floor-line control. Jail decisions still use Buy
 /// Good's logic, since jail behavior isn't tied to ownership.
@@ -41,5 +43,18 @@ impl Strategy for BuyNone {
         _space: usize,
     ) -> Option<u32> {
         None
+    }
+
+    fn decide_trade(&mut self, _view: &GameView, _player: usize) -> Option<TradeOffer> {
+        None // owns nothing to trade
+    }
+
+    fn decide_trade_response(
+        &mut self,
+        _view: &GameView,
+        _player: usize,
+        _offer: &TradeOffer,
+    ) -> bool {
+        false
     }
 }

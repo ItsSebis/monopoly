@@ -2,7 +2,7 @@
 //! math, the jail/doubles state machine, bankruptcy) live as `#[cfg(test)]`
 //! unit tests alongside the code they cover — see docs/testing-and-validation.md.
 
-use monopoly_engine::{ConfigError, Game, GameResult, PlayerConfig, RuleSet};
+use monopoly_engine::{ConfigError, Event, Game, GameResult, PlayerConfig, RuleSet};
 
 fn players(strategies: &[(&str, &str)]) -> Vec<PlayerConfig> {
     strategies
@@ -81,6 +81,34 @@ fn unknown_strategy_id_is_a_clear_error_not_a_panic() {
         Ok(_) => panic!("expected an error for an unregistered strategy id"),
         Err(err) => assert_eq!(err, ConfigError::UnknownStrategy("nonexistent".into())),
     }
+}
+
+/// Confirms the trading pipeline actually fires under realistic play (Buy
+/// All/Buy Good's real heuristic, not the hand-constructed offers the
+/// `game.rs` unit tests use) - not a claim about win-rate impact, which is
+/// too seed-dependent to assert reliably in a fast test; that comparison is
+/// made instead via a real CLI batch run (`docs/player-strategies.md`'s
+/// Trading section, `docs/roadmap.md`'s Phase 7 demo).
+#[test]
+fn trading_enabled_produces_at_least_one_trade_over_several_seeds() {
+    let rules = RuleSet {
+        trading_enabled: true,
+        max_turns: Some(300),
+        ..RuleSet::default()
+    };
+    let config = players(&[("A", "buy_all"), ("B", "buy_good")]);
+    let traded = (0..30u64).any(|seed| {
+        let mut game = Game::new(rules.clone(), &config, seed).unwrap();
+        let result = game.run_to_completion();
+        result
+            .events
+            .iter()
+            .any(|e| matches!(e.event, Event::TradeExecuted { .. }))
+    });
+    assert!(
+        traded,
+        "expected at least one of 30 seeds to produce a TradeExecuted event"
+    );
 }
 
 #[test]

@@ -478,6 +478,52 @@ pub fn compute_stats(
                     }
                 }
             }
+            // `TradeDeclined` changes nothing and needs no arm - it falls
+            // through to the wildcard below. A trade's cash side is complete
+            // and unconditional (the engine only ever executes an already-
+            // affordable trade, see `Game::trade_is_valid`), so unlike
+            // `TaxPaid`/`RentPaid` this needs no `apply_debt` shortfall
+            // handling. `cash_flow`'s existing categories (rent/tax/card/GO
+            // salary) don't have a trade bucket of their own - a trade's
+            // cash and property movement is fully reflected in net worth and
+            // the property timeline/ROI below, which is what batch/single-run
+            // analysis actually keys off; adding a dedicated cash-flow
+            // category is a presentation nicety left for whenever a metric
+            // actually needs it.
+            Event::TradeExecuted {
+                to,
+                offered_properties,
+                offered_cash,
+                requested_properties,
+                requested_cash,
+            } => {
+                ledger.cash[env.player] -= *offered_cash as i64;
+                ledger.cash[*to] += *offered_cash as i64;
+                ledger.cash[*to] -= *requested_cash as i64;
+                ledger.cash[env.player] += *requested_cash as i64;
+                for &space in requested_properties {
+                    record_acquisition(
+                        board,
+                        &mut owner,
+                        space,
+                        env.player,
+                        env.turn,
+                        &mut property_timeline,
+                        &mut monopolies_completed,
+                    );
+                }
+                for &space in offered_properties {
+                    record_acquisition(
+                        board,
+                        &mut owner,
+                        space,
+                        *to,
+                        env.turn,
+                        &mut property_timeline,
+                        &mut monopolies_completed,
+                    );
+                }
+            }
             _ => {}
         }
         i += 1 + skip;
@@ -513,6 +559,7 @@ mod tests {
     use super::*;
     use crate::config::PlayerConfig;
     use crate::game::Game;
+    use crate::state::GameState;
 
     fn players(strategies: &[&str]) -> Vec<PlayerConfig> {
         strategies
@@ -585,6 +632,63 @@ mod tests {
                 assert!(roi.cost_basis >= board.space(roi.space).price().unwrap());
             }
         }
+    }
+
+    #[test]
+    fn a_trade_transfers_property_and_cash_in_reconstructed_stats() {
+        let board = Board::standard();
+        let rules = RuleSet::default();
+        let players = players(&["buy_all", "buy_good"]);
+        let final_state = GameState::new(&rules, &["P0".to_string(), "P1".to_string()]);
+        let events = vec![EventEnvelope {
+            turn: 1,
+            player: 0,
+            seq: 1,
+            event: Event::TradeExecuted {
+                to: 1,
+                offered_properties: vec![1], // Mediterranean Avenue
+                offered_cash: 50,
+                requested_properties: vec![3], // Baltic Avenue
+                requested_cash: 0,
+            },
+        }];
+        let result = GameResult {
+            winner: None,
+            turns: 1,
+            events,
+            final_state,
+        };
+        let stats = compute_stats(&board, &players, &rules, &result);
+
+        let roi = |space: usize| {
+            stats
+                .property_roi
+                .iter()
+                .find(|r| r.space == space)
+                .unwrap()
+        };
+        assert_eq!(
+            roi(1).owner,
+            Some(1),
+            "player 0's offered property moves to player 1"
+        );
+        assert_eq!(
+            roi(3).owner,
+            Some(0),
+            "player 1's requested property moves to player 0"
+        );
+
+        let net_worth = stats.net_worth_by_turn.last().unwrap();
+        assert_eq!(
+            net_worth[0],
+            rules.starting_cash - 50 + board.space(3).price().unwrap(),
+            "player 0 paid the offered cash and gained Baltic Avenue's value"
+        );
+        assert_eq!(
+            net_worth[1],
+            rules.starting_cash + 50 + board.space(1).price().unwrap(),
+            "player 1 received the offered cash and gained Mediterranean Avenue's value"
+        );
     }
 
     #[test]

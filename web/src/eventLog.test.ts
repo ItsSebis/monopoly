@@ -49,6 +49,45 @@ describe("formatEvent", () => {
     ).toBe("Game ended after 1000 turns with no winner");
   });
 
+  it("formats an executed trade, including cash notes on either side", () => {
+    const swap = formatEvent(
+      envelope(0, {
+        type: "TradeExecuted",
+        payload: {
+          to: 1,
+          offered_properties: [1],
+          offered_cash: 0,
+          requested_properties: [3],
+          requested_cash: 0,
+        },
+      }),
+      names,
+    );
+    expect(swap).toBe("Alice traded with Bob: gave Mediterranean Avenue, received Baltic Avenue");
+
+    const withCash = formatEvent(
+      envelope(0, {
+        type: "TradeExecuted",
+        payload: {
+          to: 1,
+          offered_properties: [],
+          offered_cash: 100,
+          requested_properties: [3],
+          requested_cash: 0,
+        },
+      }),
+      names,
+    );
+    expect(withCash).toBe(
+      "Alice traded with Bob: gave nothing, received Baltic Avenue (+$100 to Bob)",
+    );
+  });
+
+  it("formats a declined trade", () => {
+    const line = formatEvent(envelope(0, { type: "TradeDeclined", payload: { to: 1 } }), names);
+    expect(line).toBe("Alice's trade offer to Bob was declined");
+  });
+
   it("describes a card effect", () => {
     const line = formatEvent(
       envelope(0, { type: "CardDrawn", payload: { deck: "Chance", effect: { AdvanceTo: 39 } } }),

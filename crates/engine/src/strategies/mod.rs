@@ -11,7 +11,7 @@ pub use buy_none::BuyNone;
 use crate::board::{ColorGroup, SpaceKind, BOARD_SIZE};
 use crate::building::can_build;
 use crate::state::GameView;
-use crate::strategy::{BuildAction, JailAction, MortgageAction, Strategy};
+use crate::strategy::{BuildAction, JailAction, MortgageAction, Strategy, TradeOffer};
 
 /// Every registered strategy id, in the same order `make_strategy` matches
 /// them — the one source of truth for anything that needs to list them (e.g.
@@ -160,6 +160,121 @@ fn raise_cash_cheapest_first(
         }
     }
     actions
+}
+
+/// Looks across every color group `player` doesn't yet fully own for one
+/// where every remaining member is held by a single other player, and
+/// proposes trading for it — a direct swap if `player` has a spare property
+/// that would complete a *different* group of that same counterparty's,
+/// otherwise a cash offer at a 1.5x premium over the missing property/ies'
+/// combined list price. Shared by Buy All and Buy Good (see
+/// docs/player-strategies.md's Trading note) - the one trading heuristic
+/// both use, at most one proposal per turn like `decide_build`.
+pub fn propose_monopoly_completing_trade(view: &GameView, player: usize) -> Option<TradeOffer> {
+    for group in ColorGroup::ALL {
+        let members: Vec<usize> = view.board.group_members(group).collect();
+        if view.owns_full_group(player, group)
+            || !members.iter().any(|&m| view.owner_of(m) == Some(player))
+        {
+            continue;
+        }
+        let missing: Vec<usize> = members
+            .iter()
+            .copied()
+            .filter(|&m| view.owner_of(m) != Some(player))
+            .collect();
+        let Some(counterparty) = view.owner_of(missing[0]) else {
+            continue; // an unowned member: nobody to trade with for it yet
+        };
+        let tradeable = missing.iter().all(|&m| {
+            view.owner_of(m) == Some(counterparty)
+                && !view.property(m).mortgaged
+                && view.property(m).houses == 0
+        });
+        if !tradeable {
+            continue;
+        }
+
+        if let Some(spare) = find_reciprocal_spare(view, player, counterparty) {
+            return Some(TradeOffer {
+                to: counterparty,
+                offered_properties: vec![spare],
+                offered_cash: 0,
+                requested_properties: missing,
+                requested_cash: 0,
+            });
+        }
+
+        let value: u32 = missing
+            .iter()
+            .filter_map(|&m| view.board.space(m).price())
+            .sum();
+        let offer_cash = value + value / 2;
+        if view.player(player).cash >= offer_cash as i64 {
+            return Some(TradeOffer {
+                to: counterparty,
+                offered_properties: Vec::new(),
+                offered_cash: offer_cash,
+                requested_properties: missing,
+                requested_cash: 0,
+            });
+        }
+    }
+    None
+}
+
+/// A property `player` owns, outside any group they're otherwise
+/// participating in, that would complete a color group for `counterparty` -
+/// a "spare" worth giving up in a direct swap rather than for cash.
+fn find_reciprocal_spare(view: &GameView, player: usize, counterparty: usize) -> Option<usize> {
+    (0..BOARD_SIZE).find(|&space| {
+        if view.owner_of(space) != Some(player)
+            || view.property(space).mortgaged
+            || view.property(space).houses > 0
+        {
+            return false;
+        }
+        let SpaceKind::Street { group, .. } = view.board.space(space) else {
+            return false;
+        };
+        let mut members = view.board.group_members(group);
+        let would_complete_for_counterparty =
+            members.all(|m| m == space || view.owner_of(m) == Some(counterparty));
+        let player_owns_others_in_group = view
+            .board
+            .group_members(group)
+            .any(|m| m != space && view.owner_of(m) == Some(player));
+        would_complete_for_counterparty && !player_owns_others_in_group
+    })
+}
+
+/// Whether `player` should accept an incoming `TradeOffer` (they'd receive
+/// `offered_properties`/`offered_cash`, giving up `requested_properties`/
+/// `requested_cash`) - shared by every strategy that can own property, since
+/// all of them value a trade the same way: accept if it completes a
+/// monopoly, or if it's a pure cash buyout that exceeds the requested
+/// properties' combined list price.
+pub fn accept_trade(view: &GameView, player: usize, offer: &TradeOffer) -> bool {
+    let completes_a_monopoly = offer.offered_properties.iter().any(|&space| {
+        let SpaceKind::Street { group, .. } = view.board.space(space) else {
+            return false;
+        };
+        view.board
+            .group_members(group)
+            .all(|m| m == space || view.owner_of(m) == Some(player))
+    });
+    if completes_a_monopoly {
+        return true;
+    }
+    if offer.offered_properties.is_empty() && !offer.requested_properties.is_empty() {
+        let value: u32 = offer
+            .requested_properties
+            .iter()
+            .filter_map(|&s| view.board.space(s).price())
+            .sum();
+        return offer.offered_cash > value;
+    }
+    false
 }
 
 #[cfg(test)]

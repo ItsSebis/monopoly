@@ -29,6 +29,7 @@ Never buys, never bids in auctions, never builds, never mortgages (it owns nothi
 | Build | ASAP once monopoly held, $50 reserve | Same, $150 reserve | Never (see above) | Never (owns nothing) |
 | Mortgage / sell houses | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | N/A (owns nothing) |
 | Jail (no card held) | Pay if affordable | Stay early, pay once profitable | Roll for doubles (default) | Same as Buy Good |
+| Trade (`RuleSet.trading_enabled`, Phase 7) | Proposes/accepts monopoly-completing swaps (see below) | Same logic as Buy All | Never proposes or accepts | Never proposes or accepts |
 
 A held "Get Out of Jail Free" card is always used automatically for every strategy, before `decide_jail_action` is even called — see [game-rules.md](./game-rules.md#jail).
 
@@ -70,7 +71,9 @@ Source: [The Econ Professor](https://theeconprofessor.com/using-monopoly-auction
 
 ### Trading
 
-The clearest connection back to this project: research on games without trading finds that only the *easiest-to-complete-by-chance* monopolies (small, 2-property groups like Brown or Dark Blue) tend to actually form, while larger, statistically better 3-property groups (Orange, Red, etc. — see above) usually end up split across players and never get built. That is the exact stalemate this engine's own Phase 1/2 batch runs already measured and documented independently (see [game-rules.md](./game-rules.md#bankruptcy)) — the external research corroborates rather than adds to that finding. It's a concrete, mechanism-backed reason to expect Phase 7's trading (`Strategy::decide_trade`, see [roadmap.md](./roadmap.md#phase-7--advanced-strategies-stretch)) to matter a great deal in practice, not just add surface area.
+The clearest connection back to this project: research on games without trading finds that only the *easiest-to-complete-by-chance* monopolies (small, 2-property groups like Brown or Dark Blue) tend to actually form, while larger, statistically better 3-property groups (Orange, Red, etc. — see above) usually end up split across players and never get built. That is the exact stalemate this engine's own Phase 1/2 batch runs already measured and documented independently (see [game-rules.md](./game-rules.md#bankruptcy)) — the external research corroborates rather than adds to that finding. It's a concrete, mechanism-backed reason to expect Phase 7's trading to matter a great deal in practice, not just add surface area.
+
+**Buy All and Buy Good** (identical trading logic, differing only in every other decision) implement exactly this: `propose_monopoly_completing_trade` scans for a color group where the strategy owns all but one property and a single other player owns the rest, then proposes either a direct swap (if the strategy holds a "spare" property — one it doesn't otherwise need — that would complete a *different* group for that same counterparty) or a cash offer at a 1.5x premium over the missing property's list price. `decide_trade_response` accepts an incoming offer if it would complete a monopoly, or if it's a pure cash buyout paying more than the requested properties' list price. **Buy Bad and Buy None** never propose or accept a trade — consistent with their existing "does the least" character. `docs/game-rules.md#trading` has the full validation/execution mechanics.
 
 ### Where the built-in strategies diverge from this
 

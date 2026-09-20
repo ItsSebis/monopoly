@@ -1,9 +1,12 @@
 use super::{
-    build_within_reserve, cash_above_reserve, patient_jail_action, raise_cash_cheapest_first,
+    accept_trade, build_within_reserve, cash_above_reserve, patient_jail_action,
+    propose_monopoly_completing_trade, raise_cash_cheapest_first,
 };
 use crate::board::SpaceKind;
 use crate::state::GameView;
-use crate::strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};
+use crate::strategy::{
+    BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy, TradeOffer,
+};
 
 /// Cash reserve required after a purchase or build.
 const RESERVE: i64 = 150;
@@ -80,5 +83,18 @@ impl Strategy for BuyGood {
         let price = view.board.space(space).price()?;
         let valuation = (price as f64 * (1.0 + score)) as u32;
         Some(valuation.min(cash_above_reserve(view, player, RESERVE)?))
+    }
+
+    fn decide_trade(&mut self, view: &GameView, player: usize) -> Option<TradeOffer> {
+        propose_monopoly_completing_trade(view, player)
+    }
+
+    fn decide_trade_response(
+        &mut self,
+        view: &GameView,
+        player: usize,
+        offer: &TradeOffer,
+    ) -> bool {
+        accept_trade(view, player, offer)
     }
 }

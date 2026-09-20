@@ -12,7 +12,9 @@ use crate::events::{Event, EventEnvelope, JailReason, TaxKind};
 use crate::rules::RuleSet;
 use crate::state::{GameState, GameView, PropertyState};
 use crate::strategies::make_strategy;
-use crate::strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};
+use crate::strategy::{
+    BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy, TradeOffer,
+};
 
 /// Fallback cap against a non-terminating game when `RuleSet.max_turns` isn't
 /// set — e.g. every player running Buy None can in principle run for a very
@@ -202,6 +204,9 @@ impl Game {
             }
             if !self.state.players[player].bankrupt {
                 self.resolve_building_phase(player);
+            }
+            if !self.state.players[player].bankrupt && self.rules.trading_enabled {
+                self.maybe_trade(player);
             }
         }
 
@@ -785,6 +790,79 @@ impl Game {
         }
     }
 
+    /// Calls `Strategy::decide_trade` once, at the end of `player`'s own
+    /// turn, only when `RuleSet.trading_enabled` (see
+    /// `docs/game-rules.md#trading`). An invalid proposal (unowned/mortgaged/
+    /// developed property on either side, unaffordable cash, trading with
+    /// self or a bankrupt player) is silently dropped without even asking the
+    /// counterparty — matching how every other `Strategy` action here is
+    /// validated rather than trusted. A valid proposal is offered to the
+    /// counterparty via `decide_trade_response`; accepted trades are applied
+    /// atomically (`execute_trade`), declined ones change nothing.
+    fn maybe_trade(&mut self, player: usize) {
+        let (strategy, view) = self.strategy_and_view(player);
+        let Some(offer) = strategy.decide_trade(&view, player) else {
+            return;
+        };
+        if !self.trade_is_valid(player, &offer) {
+            return;
+        }
+        let (counterparty_strategy, view) = self.strategy_and_view(offer.to);
+        let accepted = counterparty_strategy.decide_trade_response(&view, offer.to, &offer);
+        if accepted {
+            self.execute_trade(player, &offer);
+            self.record(
+                player,
+                Event::TradeExecuted {
+                    to: offer.to,
+                    offered_properties: offer.offered_properties,
+                    offered_cash: offer.offered_cash,
+                    requested_properties: offer.requested_properties,
+                    requested_cash: offer.requested_cash,
+                },
+            );
+        } else {
+            self.record(player, Event::TradeDeclined { to: offer.to });
+        }
+    }
+
+    fn trade_is_valid(&self, player: usize, offer: &TradeOffer) -> bool {
+        if offer.to == player
+            || offer.to >= self.state.players.len()
+            || self.state.players[offer.to].bankrupt
+        {
+            return false;
+        }
+        let owns_and_tradeable = |owner: usize, spaces: &[usize]| {
+            spaces.iter().all(|&s| {
+                self.state.properties[s].owner == Some(owner)
+                    && !self.state.properties[s].mortgaged
+                    && self.state.properties[s].houses == 0
+            })
+        };
+        owns_and_tradeable(player, &offer.offered_properties)
+            && owns_and_tradeable(offer.to, &offer.requested_properties)
+            && self.state.players[player].cash >= offer.offered_cash as i64
+            && self.state.players[offer.to].cash >= offer.requested_cash as i64
+    }
+
+    /// Swaps both sides of `offer` in one step: `player` gives up
+    /// `offered_properties`/`offered_cash` and receives
+    /// `requested_properties`/`requested_cash` from `offer.to`. Called only
+    /// after `trade_is_valid` confirms both sides can actually cover it.
+    fn execute_trade(&mut self, player: usize, offer: &TradeOffer) {
+        for &space in &offer.offered_properties {
+            self.state.properties[space].owner = Some(offer.to);
+        }
+        for &space in &offer.requested_properties {
+            self.state.properties[space].owner = Some(player);
+        }
+        self.state.players[player].cash -= offer.offered_cash as i64;
+        self.state.players[offer.to].cash += offer.offered_cash as i64;
+        self.state.players[offer.to].cash -= offer.requested_cash as i64;
+        self.state.players[player].cash += offer.requested_cash as i64;
+    }
+
     fn apply_card_effect(&mut self, player: usize, deck: DeckKind, effect: CardEffect) {
         self.record(player, Event::CardDrawn { deck, effect });
         match effect {
@@ -1302,6 +1380,71 @@ mod tests {
         ) -> Option<u32> {
             Some(self.0)
         }
+        fn decide_trade(&mut self, _view: &GameView, _player: usize) -> Option<TradeOffer> {
+            None
+        }
+        fn decide_trade_response(
+            &mut self,
+            _view: &GameView,
+            _player: usize,
+            _offer: &TradeOffer,
+        ) -> bool {
+            false
+        }
+    }
+
+    /// A test-only strategy with a fixed trade proposal/response, for
+    /// deterministic trade-validation tests — Buy All/Buy Good's actual
+    /// trading heuristic depends on board state a test would otherwise have
+    /// to painstakingly reconstruct just to trigger a specific offer shape.
+    #[derive(Debug)]
+    struct FixedTrader {
+        offer: Option<TradeOffer>,
+        accept: bool,
+    }
+
+    impl Strategy for FixedTrader {
+        fn decide_purchase(
+            &mut self,
+            _view: &GameView,
+            _player: usize,
+            _offer: &PurchaseOffer,
+        ) -> bool {
+            false
+        }
+        fn decide_jail_action(&mut self, _view: &GameView, _player: usize) -> JailAction {
+            JailAction::RollForDoubles
+        }
+        fn decide_build(&mut self, _view: &GameView, _player: usize) -> Vec<BuildAction> {
+            Vec::new()
+        }
+        fn decide_mortgage(
+            &mut self,
+            _view: &GameView,
+            _player: usize,
+            _shortfall: u32,
+        ) -> Vec<MortgageAction> {
+            Vec::new()
+        }
+        fn decide_auction_bid(
+            &mut self,
+            _view: &GameView,
+            _player: usize,
+            _space: usize,
+        ) -> Option<u32> {
+            None
+        }
+        fn decide_trade(&mut self, _view: &GameView, _player: usize) -> Option<TradeOffer> {
+            self.offer.clone()
+        }
+        fn decide_trade_response(
+            &mut self,
+            _view: &GameView,
+            _player: usize,
+            _offer: &TradeOffer,
+        ) -> bool {
+            self.accept
+        }
     }
 
     #[test]
@@ -1439,5 +1582,149 @@ mod tests {
             !game.try_build(0, 1),
             "with the rule off, an empty bank supply should still block building"
         );
+    }
+
+    fn trade_offer(
+        to: usize,
+        offered: Vec<usize>,
+        offered_cash: u32,
+        requested: Vec<usize>,
+    ) -> TradeOffer {
+        TradeOffer {
+            to,
+            offered_properties: offered,
+            offered_cash,
+            requested_properties: requested,
+            requested_cash: 0,
+        }
+    }
+
+    #[test]
+    fn a_valid_accepted_trade_moves_properties_and_cash_both_ways() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        game.state.properties[1].owner = Some(0); // Mediterranean Avenue
+        game.state.properties[3].owner = Some(1); // Baltic Avenue
+        game.state.players[0].cash = 500;
+        game.state.players[1].cash = 500;
+        let offer = trade_offer(1, vec![1], 50, vec![3]);
+        game.strategies[0] = Box::new(FixedTrader {
+            offer: Some(offer),
+            accept: false, // irrelevant: player 0 is the proposer, not asked to accept
+        });
+        game.strategies[1] = Box::new(FixedTrader {
+            offer: None,
+            accept: true,
+        });
+
+        game.maybe_trade(0);
+
+        assert_eq!(game.state.properties[1].owner, Some(1));
+        assert_eq!(game.state.properties[3].owner, Some(0));
+        assert_eq!(game.state.players[0].cash, 450);
+        assert_eq!(game.state.players[1].cash, 550);
+        assert!(matches!(
+            game.log.last().unwrap().event,
+            Event::TradeExecuted { to: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn a_trade_is_declined_by_the_counterparty() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        game.state.properties[1].owner = Some(0);
+        game.state.properties[3].owner = Some(1);
+        let offer = trade_offer(1, vec![1], 0, vec![3]);
+        game.strategies[0] = Box::new(FixedTrader {
+            offer: Some(offer),
+            accept: false,
+        });
+        game.strategies[1] = Box::new(FixedTrader {
+            offer: None,
+            accept: false,
+        });
+
+        game.maybe_trade(0);
+
+        assert_eq!(
+            game.state.properties[1].owner,
+            Some(0),
+            "declined: nothing moves"
+        );
+        assert_eq!(game.state.properties[3].owner, Some(1));
+        assert!(matches!(
+            game.log.last().unwrap().event,
+            Event::TradeDeclined { to: 1 }
+        ));
+    }
+
+    #[test]
+    fn a_trade_offering_a_property_with_houses_on_it_is_silently_rejected() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        game.state.properties[1].owner = Some(0);
+        game.state.properties[1].houses = 1; // developed - can't be traded
+        game.state.properties[3].owner = Some(1);
+        let offer = trade_offer(1, vec![1], 0, vec![3]);
+        game.strategies[0] = Box::new(FixedTrader {
+            offer: Some(offer),
+            accept: false,
+        });
+        game.strategies[1] = Box::new(FixedTrader {
+            offer: None,
+            accept: true, // would accept if asked - it's never asked
+        });
+        let log_len_before = game.log.len();
+
+        game.maybe_trade(0);
+
+        assert_eq!(game.state.properties[1].owner, Some(0));
+        assert_eq!(game.state.properties[3].owner, Some(1));
+        assert_eq!(
+            game.log.len(),
+            log_len_before,
+            "an invalid proposal isn't even offered to the counterparty"
+        );
+    }
+
+    #[test]
+    fn a_trade_requesting_a_property_the_counterparty_does_not_own_is_rejected() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        game.state.properties[1].owner = Some(0);
+        // Space 3 is unowned, not owned by player 1 as the offer claims.
+        let offer = trade_offer(1, vec![1], 0, vec![3]);
+        game.strategies[0] = Box::new(FixedTrader {
+            offer: Some(offer),
+            accept: false,
+        });
+        game.strategies[1] = Box::new(FixedTrader {
+            offer: None,
+            accept: true,
+        });
+
+        game.maybe_trade(0);
+
+        assert_eq!(game.state.properties[1].owner, Some(0));
+        assert_eq!(game.state.properties[3].owner, None);
+    }
+
+    #[test]
+    fn a_trade_the_proposer_cannot_afford_is_rejected() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        game.state.properties[1].owner = Some(0);
+        game.state.properties[3].owner = Some(1);
+        game.state.players[0].cash = 10;
+        let offer = trade_offer(1, vec![1], 1_000, vec![3]); // far more cash than player 0 has
+        game.strategies[0] = Box::new(FixedTrader {
+            offer: Some(offer),
+            accept: false,
+        });
+        game.strategies[1] = Box::new(FixedTrader {
+            offer: None,
+            accept: true,
+        });
+
+        game.maybe_trade(0);
+
+        assert_eq!(game.state.properties[1].owner, Some(0));
+        assert_eq!(game.state.properties[3].owner, Some(1));
     }
 }

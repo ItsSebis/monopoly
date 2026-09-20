@@ -101,6 +101,22 @@ pub enum Event {
     Bankrupted {
         payee: Option<usize>,
     },
+    /// A trade `player` proposed to `to` (see `Strategy::decide_trade`) that
+    /// `to` accepted and the engine successfully applied. `player`'s side
+    /// gave up `offered_properties`/`offered_cash` and received
+    /// `requested_properties`/`requested_cash` in return.
+    TradeExecuted {
+        to: usize,
+        offered_properties: Vec<usize>,
+        offered_cash: u32,
+        requested_properties: Vec<usize>,
+        requested_cash: u32,
+    },
+    /// A trade `player` proposed to `to` that `to` declined (or that failed
+    /// re-validation - see `Game::maybe_trade`). No state changed.
+    TradeDeclined {
+        to: usize,
+    },
     GameEnded {
         winner: Option<usize>,
         turns: u32,

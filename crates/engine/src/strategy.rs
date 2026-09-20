@@ -34,6 +34,22 @@ pub enum MortgageAction {
     SellHouse(usize),
 }
 
+/// A proposed trade from the acting player (`decide_trade`'s caller) to
+/// `to`: `offered_*` leaves the proposer, `requested_*` is what they want
+/// back from `to`. Only unmortgaged, house-free properties can ever be
+/// traded (see `docs/game-rules.md#trading`) — the engine validates this,
+/// not the strategy, so a strategy proposing an invalid trade is simply
+/// refused rather than crashing anything, matching every other action type
+/// here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TradeOffer {
+    pub to: usize,
+    pub offered_properties: Vec<usize>,
+    pub offered_cash: u32,
+    pub requested_properties: Vec<usize>,
+    pub requested_cash: u32,
+}
+
 /// Every decision a player must make. The trait grows additively as each
 /// mechanic is implemented (Phase 1 had only purchase/jail decisions);
 /// Phase 2 adds building, raising cash under a shortfall, and auction
@@ -64,4 +80,17 @@ pub trait Strategy: std::fmt::Debug {
     /// docs/roadmap.md's Phase 2 auction design note for why auctions are
     /// modeled as a single sealed round rather than live ascending bidding.
     fn decide_auction_bid(&mut self, view: &GameView, player: usize, space: usize) -> Option<u32>;
+    /// Called once at the end of `player`'s own turn, only when
+    /// `RuleSet.trading_enabled` — at most one proposed trade per turn,
+    /// mirroring `decide_build`'s once-per-turn shape. `None` to propose
+    /// nothing this turn.
+    fn decide_trade(&mut self, view: &GameView, player: usize) -> Option<TradeOffer>;
+    /// Asks `player` (the trade's `to`) whether to accept `offer`. This is a
+    /// deliberate addition beyond `docs/simulation-engine.md`'s original
+    /// one-hook sketch: a trade means nothing without the other side's
+    /// consent, the same reasoning that already makes `decide_auction_bid`
+    /// ask every player rather than just the current one (see above) — see
+    /// `docs/game-rules.md#trading` for the full rationale.
+    fn decide_trade_response(&mut self, view: &GameView, player: usize, offer: &TradeOffer)
+        -> bool;
 }

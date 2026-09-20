@@ -84,7 +84,7 @@ export type JailAction = "PayFine" | "RollForDoubles";
 export type Event =
   | { type: "RollDice"; payload: { dice: [number, number] } }
   | { type: "Move"; payload: { from: number; to: number } }
-  | { type: "PassGo" }
+  | { type: "PassGo"; payload: { amount: number } }
   | { type: "PropertyOffered"; payload: { space: number; price: number } }
   | { type: "PurchaseDecision"; payload: { space: number; bought: boolean } }
   | { type: "RentPaid"; payload: { to: number; amount: number; space: number } }

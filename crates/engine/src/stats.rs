@@ -307,9 +307,9 @@ pub fn compute_stats(
         match &env.event {
             Event::RollDice { dice } => dice_roll_counts[(dice.0 + dice.1) as usize - 2] += 1,
             Event::Move { to, .. } => landing_counts[*to] += 1,
-            Event::PassGo => {
-                ledger.cash[env.player] += rules.go_salary as i64;
-                cash_flow[env.player].go_salary_collected += rules.go_salary as i64;
+            Event::PassGo { amount } => {
+                ledger.cash[env.player] += *amount as i64;
+                cash_flow[env.player].go_salary_collected += *amount as i64;
             }
             Event::PropertyOffered { price, .. } => pending_offer_price = Some(*price),
             Event::PurchaseDecision { space, bought } => {
@@ -632,6 +632,39 @@ mod tests {
                 assert!(roi.cost_basis >= board.space(roi.space).price().unwrap());
             }
         }
+    }
+
+    /// Regression: `PassGo` carries the actual amount paid precisely so a
+    /// doubled landing-on-GO payment (`RuleSet.double_go_salary`) isn't
+    /// silently reconstructed as the flat `rules.go_salary` — this event's
+    /// `amount` (400) deliberately differs from `rules.go_salary` (200) to
+    /// catch exactly that.
+    #[test]
+    fn pass_go_credits_the_events_own_amount_not_the_flat_go_salary() {
+        let board = Board::standard();
+        let rules = RuleSet::default();
+        let players = players(&["buy_all", "buy_good"]);
+        let final_state = GameState::new(&rules, &["P0".to_string(), "P1".to_string()]);
+        let events = vec![EventEnvelope {
+            turn: 1,
+            player: 0,
+            seq: 1,
+            event: Event::PassGo { amount: 400 },
+        }];
+        let result = GameResult {
+            winner: None,
+            turns: 1,
+            events,
+            final_state,
+        };
+
+        let stats = compute_stats(&board, &players, &rules, &result);
+
+        assert_eq!(
+            stats.net_worth_by_turn.last().unwrap()[0],
+            rules.starting_cash + 400
+        );
+        assert_eq!(stats.cash_flow[0].go_salary_collected, 400);
     }
 
     #[test]

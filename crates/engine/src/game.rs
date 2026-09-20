@@ -268,7 +268,7 @@ impl Game {
                 self.rules.go_salary
             };
             self.pay_from_bank(player, salary);
-            self.record(player, Event::PassGo);
+            self.record(player, Event::PassGo { amount: salary });
         }
     }
 
@@ -347,11 +347,18 @@ impl Game {
             if self.state.properties[space].owner != Some(player) {
                 continue;
             }
-            let houses = self.state.properties[space].houses;
-            if houses == 5 {
-                self.state.bank_hotels_remaining += 1;
-            } else {
-                self.state.bank_houses_remaining += houses;
+            // Bank bookkeeping stays frozen under `unlimited_houses`, matching
+            // `try_build`/`try_sell_house` — a bankruptcy this can actually
+            // reach in practice is presently prevented by `raise_cash`
+            // liquidating houses first, but the guard is symmetric with the
+            // other two sites regardless.
+            if !self.rules.unlimited_houses {
+                let houses = self.state.properties[space].houses;
+                if houses == 5 {
+                    self.state.bank_hotels_remaining += 1;
+                } else {
+                    self.state.bank_houses_remaining += houses;
+                }
             }
             self.state.properties[space].houses = 0;
             match payee {
@@ -1263,7 +1270,10 @@ mod tests {
 
         assert_eq!(game.state.players[0].position, 38);
         assert!(
-            !game.log.iter().any(|e| matches!(e.event, Event::PassGo)),
+            !game
+                .log
+                .iter()
+                .any(|e| matches!(e.event, Event::PassGo { .. })),
             "moving backward must never pay GO salary"
         );
     }
@@ -1582,6 +1592,25 @@ mod tests {
             !game.try_build(0, 1),
             "with the rule off, an empty bank supply should still block building"
         );
+    }
+
+    #[test]
+    fn unlimited_houses_keeps_the_bank_supply_frozen_through_a_bankruptcy() {
+        let rules = rules_with(|r| r.unlimited_houses = true);
+        let mut game = Game::new(rules, &two_players(), 0).unwrap();
+        game.state.properties[1].owner = Some(0);
+        game.state.properties[1].houses = 4; // built well past what the real 32-house stock could ever cover
+        game.state.bank_houses_remaining = 0;
+        game.state.bank_hotels_remaining = 0;
+        game.state.players[0].cash = 10;
+
+        game.bankrupt_player(0, None);
+
+        assert_eq!(
+            game.state.bank_houses_remaining, 0,
+            "the frozen counter must not be credited back on a bankruptcy either"
+        );
+        assert_eq!(game.state.bank_hotels_remaining, 0);
     }
 
     fn trade_offer(

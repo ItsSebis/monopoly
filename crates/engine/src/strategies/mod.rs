@@ -209,7 +209,7 @@ pub fn propose_monopoly_completing_trade(view: &GameView, player: usize) -> Opti
             continue;
         }
 
-        if let Some(spare) = find_reciprocal_spare(view, player, counterparty) {
+        if let Some(spare) = find_reciprocal_spare(view, player, counterparty, group) {
             return Some(TradeOffer {
                 to: counterparty,
                 offered_properties: vec![spare],
@@ -240,7 +240,19 @@ pub fn propose_monopoly_completing_trade(view: &GameView, player: usize) -> Opti
 /// A property `player` owns, outside any group they're otherwise
 /// participating in, that would complete a color group for `counterparty` -
 /// a "spare" worth giving up in a direct swap rather than for cash.
-fn find_reciprocal_spare(view: &GameView, player: usize, counterparty: usize) -> Option<usize> {
+/// `target` (the group `player` is trying to complete via this same trade)
+/// is explicitly excluded: `player`'s own member of `target` would otherwise
+/// satisfy every condition here too (it does complete `target` for
+/// `counterparty`, and `player` owns no *other* member of it, precisely
+/// because it's the one property being traded away) — offering it up would
+/// swap `player`'s piece of the group for `counterparty`'s, mirroring the
+/// exact same trade back with nobody ever completing anything.
+fn find_reciprocal_spare(
+    view: &GameView,
+    player: usize,
+    counterparty: usize,
+    target: ColorGroup,
+) -> Option<usize> {
     (0..BOARD_SIZE).find(|&space| {
         if view.owner_of(space) != Some(player)
             || view.property(space).mortgaged
@@ -251,6 +263,9 @@ fn find_reciprocal_spare(view: &GameView, player: usize, counterparty: usize) ->
         let SpaceKind::Street { group, .. } = view.board.space(space) else {
             return false;
         };
+        if group == target {
+            return false;
+        }
         let mut members = view.board.group_members(group);
         let would_complete_for_counterparty =
             members.all(|m| m == space || view.owner_of(m) == Some(counterparty));
@@ -266,16 +281,23 @@ fn find_reciprocal_spare(view: &GameView, player: usize, counterparty: usize) ->
 /// `offered_properties`/`offered_cash`, giving up `requested_properties`/
 /// `requested_cash`) - shared by every strategy that can own property, since
 /// all of them value a trade the same way: accept if it completes a
-/// monopoly, or if it's a pure cash buyout that exceeds the requested
-/// properties' combined list price.
+/// monopoly *after* the trade, or if it's a pure cash buyout that exceeds
+/// the requested properties' combined list price.
 pub fn accept_trade(view: &GameView, player: usize, offer: &TradeOffer) -> bool {
+    // Judged on ownership *after* the swap: an incoming property only counts
+    // if every other member of its group is still (or becomes) `player`'s -
+    // not given away by this same trade's `requested_properties`, which a
+    // check against current ownership alone would miss (accepting the exact
+    // mirror of a trade that also takes away another piece of the group).
     let completes_a_monopoly = offer.offered_properties.iter().any(|&space| {
         let SpaceKind::Street { group, .. } = view.board.space(space) else {
             return false;
         };
-        view.board
-            .group_members(group)
-            .all(|m| m == space || view.owner_of(m) == Some(player))
+        view.board.group_members(group).all(|m| {
+            m == space
+                || offer.offered_properties.contains(&m)
+                || (view.owner_of(m) == Some(player) && !offer.requested_properties.contains(&m))
+        })
     });
     if completes_a_monopoly {
         return true;
@@ -294,6 +316,9 @@ pub fn accept_trade(view: &GameView, player: usize, offer: &TradeOffer) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::Board;
+    use crate::rules::RuleSet;
+    use crate::state::GameState;
 
     #[test]
     fn every_strategy_id_round_trips_through_make_strategy() {
@@ -303,5 +328,95 @@ mod tests {
                 "STRATEGY_IDS lists {id}, but make_strategy doesn't recognize it"
             );
         }
+    }
+
+    fn two_player_state(rules: &RuleSet) -> GameState {
+        GameState::new(rules, &["P0".to_string(), "P1".to_string()])
+    }
+
+    /// Regression for a bug where `find_reciprocal_spare` could offer up
+    /// `player`'s own member of the group being traded for (it trivially
+    /// "completes" the counterparty's group and isn't part of any *other*
+    /// group `player` owns) - proposing the exact mirror of the trade being
+    /// made, which two trading strategies would then swap back and forth
+    /// forever without ever completing anything.
+    #[test]
+    fn find_reciprocal_spare_never_offers_a_member_of_the_target_group_itself() {
+        let board = Board::standard();
+        let rules = RuleSet::default();
+        let mut state = two_player_state(&rules);
+        // Brown: player 0 owns Mediterranean (1), player 1 owns Baltic (3) -
+        // the only "spare" `find_reciprocal_spare` could otherwise find is
+        // player 0's own Mediterranean, since it has no other Brown property
+        // and giving it up "completes" Brown for player 1.
+        state.properties[1].owner = Some(0);
+        state.properties[3].owner = Some(1);
+        let view = GameView {
+            board: &board,
+            rules: &rules,
+            state: &state,
+        };
+
+        let spare = find_reciprocal_spare(&view, 0, 1, ColorGroup::Brown);
+
+        assert_eq!(
+            spare, None,
+            "the only candidate is player 0's own Mediterranean Avenue, in the excluded target group"
+        );
+    }
+
+    /// End-to-end regression: proposing a trade for a 2-property group with
+    /// no other groups in play must fall back to a cash offer (or nothing),
+    /// never a direct swap of the two matching pieces.
+    #[test]
+    fn propose_monopoly_completing_trade_never_proposes_a_same_group_swap() {
+        let board = Board::standard();
+        let rules = RuleSet::default();
+        let mut state = two_player_state(&rules);
+        state.properties[1].owner = Some(0);
+        state.properties[3].owner = Some(1);
+        state.players[0].cash = 10_000;
+        let view = GameView {
+            board: &board,
+            rules: &rules,
+            state: &state,
+        };
+
+        if let Some(offer) = propose_monopoly_completing_trade(&view, 0) {
+            assert!(
+                !offer.offered_properties.contains(&1),
+                "must not offer away the exact property needed to complete the group: {offer:?}"
+            );
+        }
+    }
+
+    /// Regression for a bug where `accept_trade` judged "completes a
+    /// monopoly" against *current* ownership only, so it accepted the exact
+    /// mirror image of the same broken trade (receiving one piece of a group
+    /// while simultaneously giving away the group's other piece).
+    #[test]
+    fn accept_trade_rejects_a_same_group_mirror_swap() {
+        let board = Board::standard();
+        let rules = RuleSet::default();
+        let mut state = two_player_state(&rules);
+        state.properties[1].owner = Some(0); // Mediterranean - about to be offered to player 0
+        state.properties[3].owner = Some(0); // Baltic - player 0 already owns this
+        let view = GameView {
+            board: &board,
+            rules: &rules,
+            state: &state,
+        };
+        let offer = TradeOffer {
+            to: 0,
+            offered_properties: vec![1],
+            offered_cash: 0,
+            requested_properties: vec![3],
+            requested_cash: 0,
+        };
+
+        assert!(
+            !accept_trade(&view, 0, &offer),
+            "receiving Mediterranean while giving away Baltic completes nothing"
+        );
     }
 }

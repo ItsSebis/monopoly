@@ -9,6 +9,16 @@ function envelope(player: number, event: EventEnvelope["event"]): EventEnvelope 
 }
 
 describe("formatEvent", () => {
+  it("formats passing GO with the amount actually collected", () => {
+    expect(formatEvent(envelope(0, { type: "PassGo", payload: { amount: 200 } }), names)).toBe(
+      "Alice passed GO and collected $200",
+    );
+    // Under RuleSet.double_go_salary, landing exactly on GO carries double.
+    expect(formatEvent(envelope(0, { type: "PassGo", payload: { amount: 400 } }), names)).toBe(
+      "Alice passed GO and collected $400",
+    );
+  });
+
   it("formats rent paid with both players' names and the space", () => {
     const line = formatEvent(
       envelope(0, { type: "RentPaid", payload: { to: 1, amount: 44, space: 39 } }),

@@ -55,7 +55,7 @@ export function formatEvent(env: EventEnvelope, playerNames: string[]): string {
     case "Move":
       return `${actor} moved to ${spaceName(e.payload.to)}`;
     case "PassGo":
-      return `${actor} passed GO`;
+      return `${actor} passed GO and collected $${e.payload.amount}`;
     case "PropertyOffered":
       return `${spaceName(e.payload.space)} ($${e.payload.price}) offered to ${actor}`;
     case "PurchaseDecision":

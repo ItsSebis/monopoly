@@ -31,7 +31,13 @@ pub enum Event {
         from: usize,
         to: usize,
     },
-    PassGo,
+    /// `amount` is what was actually paid — `rules.go_salary`, or double that
+    /// under `RuleSet.double_go_salary` when landing exactly on GO — carried
+    /// explicitly since replaying this event (`stats.rs`,
+    /// `reconcile_final_cash`) has no other way to tell the two apart.
+    PassGo {
+        amount: u32,
+    },
     PropertyOffered {
         space: usize,
         price: u32,

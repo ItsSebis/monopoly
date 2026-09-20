@@ -16,7 +16,9 @@ Body: `engine::run_record`'s `SingleRunRecord` or `BatchRunRecord` shape ([data-
 
 Ask the server to **run** a batch natively (not just archive one already run elsewhere) — this is what the browser calls when the user launches a batch from the UI, since the browser itself never executes batches (see [architecture.md](./architecture.md#native-vs-wasm-two-execution-paths-one-engine)).
 
-Body: `{ "rule_set": RuleSet, "players": [PlayerConfig], "game_count": 10000 }` (seeds are generated server-side from a fresh random base seed, then recorded in the resulting `Run`). The server runs it synchronously and returns the completed, archived `Run` — every count, not just "modest" ones, as of Phase 4. **`GET /runs/{id}/status` progress polling is deferred to Phase 6**: it has no real consumer until the browser's batch flow needs a progress bar, and would mean threading a progress callback through `run_batch`'s `rayon` loop for a feature nothing exercises yet.
+Body: `{ "rule_set": RuleSet, "players": [PlayerConfig], "game_count": 10000 }` (seeds are generated server-side from a fresh random base seed, then recorded in the resulting `Run`). The server runs it synchronously and returns the completed, archived `Run` — every count, not just "modest" ones, as of Phase 4.
+
+**`GET /runs/{id}/status` progress polling was deliberately never built** (Phase 4 flagged it as a Phase 6 decision; Phase 6 measured instead of guessing): `monopoly batch --games 5000` (4 players, `even_build_rule`/`auction_on_decline` on) completes in 0.17s end-to-end via the CLI's rayon-parallel `run_batch`. A batch this size finishes before a progress poll could even land, so there's no real progress to report and no case for threading a progress callback through `run_batch`'s `rayon` loop. The browser's batch UI ([frontend.md](./frontend.md#batch-runs-from-the-ui)) just disables its submit button for the one synchronous request/response.
 
 ## `GET /runs`
 

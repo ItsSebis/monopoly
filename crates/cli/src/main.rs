@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use monopoly_engine::{
     build_batch_run_record, compute_stats, derive_batch_seeds, BatchRunRecord, Board, Game,
-    GameConfig, GameResult, PerGameStats, PlayerConfig, SingleRunRecord,
+    GameConfig, GameResult, PerGameStats, PlayerConfig, RuleSet, SingleRunRecord, STRATEGY_IDS,
 };
 use serde::Serialize;
 
@@ -77,6 +77,32 @@ enum Command {
         #[arg(long)]
         archive_url: Option<String>,
     },
+    /// Every registered strategy against every other, one seat each in a
+    /// single batch — a `Batch` whose player list is auto-generated instead
+    /// of hand-written, since `AggregateStats::head_to_head` already
+    /// computes the full pairwise matrix regardless of how many strategies
+    /// share one game.
+    Tournament {
+        /// Comma-separated strategy ids to include; defaults to every
+        /// registered strategy (`STRATEGY_IDS`).
+        #[arg(long, value_delimiter = ',')]
+        strategies: Option<Vec<String>>,
+        /// Total number of games to run.
+        #[arg(long)]
+        games: usize,
+        /// Base seed the per-game seeds are deterministically derived from;
+        /// a random one is generated (and printed) if omitted.
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Path to a TOML or JSON file containing just a `RuleSet` (no
+        /// players); defaults to `RuleSet::default()`.
+        #[arg(long)]
+        rules: Option<PathBuf>,
+        /// Write the full batch result as JSON here instead of printing a
+        /// summary.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -102,6 +128,13 @@ fn main() -> ExitCode {
             csv.as_deref(),
             archive_url.as_deref(),
         ),
+        Command::Tournament {
+            strategies,
+            games,
+            seed,
+            rules,
+            out,
+        } => tournament(strategies, games, seed, rules.as_deref(), out.as_deref()),
     }
 }
 
@@ -222,12 +255,87 @@ fn batch(
     ExitCode::SUCCESS
 }
 
+/// Every strategy against every other, one seat each, in a single batch —
+/// `AggregateStats::head_to_head` (`batch.rs`) already computes the full
+/// pairwise matrix for however many strategies share one game, so this is
+/// `batch()`'s exact pipeline with an auto-generated player list instead of
+/// a hand-written config file.
+fn tournament(
+    strategies: Option<Vec<String>>,
+    games: usize,
+    seed: Option<u64>,
+    rules_path: Option<&Path>,
+    out: Option<&Path>,
+) -> ExitCode {
+    let ids: Vec<String> =
+        strategies.unwrap_or_else(|| STRATEGY_IDS.iter().map(|s| s.to_string()).collect());
+    if ids.len() < 2 {
+        return fail(&format!(
+            "need at least 2 strategies, got {} ({})",
+            ids.len(),
+            ids.join(",")
+        ));
+    }
+    let rules = match rules_path {
+        Some(path) => match load_rules(path) {
+            Ok(r) => r,
+            Err(e) => return fail(&e),
+        },
+        None => RuleSet::default(),
+    };
+    let players: Vec<PlayerConfig> = ids
+        .iter()
+        .map(|id| PlayerConfig {
+            name: id.clone(),
+            strategy: id.clone(),
+        })
+        .collect();
+
+    let base_seed = seed.unwrap_or_else(rand::random);
+    let seeds = derive_batch_seeds(base_seed, games);
+
+    let bar = progress_bar(games);
+    let record = build_batch_run_record(rules, players, seeds, Some(&|| bar.inc(1)));
+    bar.finish_and_clear();
+    let record = match record {
+        Ok(r) => r,
+        Err(e) => return fail(&e.to_string()),
+    };
+
+    match out {
+        Some(path) => {
+            if let Err(e) = write_json(path, &record) {
+                return fail(&e);
+            }
+            println!(
+                "base seed {base_seed}: wrote {} games to {}",
+                record.per_game_summary.len(),
+                path.display()
+            );
+        }
+        None => print_batch_summary(base_seed, &record),
+    }
+
+    ExitCode::SUCCESS
+}
+
 fn fail(message: &str) -> ExitCode {
     eprintln!("error: {message}");
     ExitCode::FAILURE
 }
 
 fn load_config(path: &Path) -> Result<GameConfig, String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    if path.extension().is_some_and(|ext| ext == "json") {
+        serde_json::from_str(&text).map_err(|e| format!("parsing {} as JSON: {e}", path.display()))
+    } else {
+        toml::from_str(&text).map_err(|e| format!("parsing {} as TOML: {e}", path.display()))
+    }
+}
+
+/// Like `load_config`, but for a file containing just a `RuleSet` (no
+/// `players`) — `tournament`'s player list is auto-generated instead.
+fn load_rules(path: &Path) -> Result<RuleSet, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
     if path.extension().is_some_and(|ext| ext == "json") {
         serde_json::from_str(&text).map_err(|e| format!("parsing {} as JSON: {e}", path.display()))

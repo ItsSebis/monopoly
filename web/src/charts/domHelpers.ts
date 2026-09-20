@@ -1,6 +1,30 @@
 // Tiny DOM builders shared by singleRunCharts.ts and batchCharts.ts - not
 // stats logic, just the repeated "labeled section" / "canvas" / "table"
 // shapes both dashboards are made of.
+import type { Chart } from "./chartSetup";
+
+/** Chart.js instances created for a given dashboard container, so a
+ * re-render (browsing to another history entry, re-opening batch results,
+ * clicking "View stats" again) can `destroy()` the previous ones before
+ * wiping their canvases via `container.innerHTML = ""`. Chart.js keeps every
+ * un-destroyed instance alive in its own internal registry (`Chart.instances`)
+ * even after its canvas is detached from the DOM, so skipping this leaks a
+ * full Chart (datasets, scales, listeners) on every re-render. */
+const chartsByContainer = new WeakMap<HTMLElement, Chart[]>();
+
+export function trackChart(container: HTMLElement, chart: Chart): Chart {
+  const list = chartsByContainer.get(container);
+  if (list) list.push(chart);
+  else chartsByContainer.set(container, [chart]);
+  return chart;
+}
+
+/** Destroys every Chart.js instance previously tracked for `container`.
+ * Call this before re-rendering a dashboard into the same container. */
+export function destroyCharts(container: HTMLElement): void {
+  for (const chart of chartsByContainer.get(container) ?? []) chart.destroy();
+  chartsByContainer.delete(container);
+}
 
 export function chartSection(container: HTMLElement, title: string): HTMLElement {
   const el = document.createElement("section");

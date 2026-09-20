@@ -4,7 +4,7 @@
 import { spaceName } from "../board/layout";
 import { renderBarChart } from "./barChart";
 import { colorForIndex } from "./colors";
-import { canvasIn, chartSection, renderTable } from "./domHelpers";
+import { canvasIn, chartSection, destroyCharts, renderTable, trackChart } from "./domHelpers";
 import { renderBoardHeatmap } from "./heatmap";
 import { renderLineChart } from "./lineChart";
 import type { PerGameStats } from "../types";
@@ -18,30 +18,37 @@ const CASH_FLOW_CATEGORIES: { key: keyof PerGameStats["cash_flow"][number]; labe
 ];
 
 export function renderSingleRunCharts(container: HTMLElement, stats: PerGameStats, playerNames: string[]): void {
+  destroyCharts(container);
   container.innerHTML = "";
 
   const summary = chartSection(container, "Result");
   const winner = stats.winner === null ? "No winner (max turns reached)" : playerNames[stats.winner];
   summary.appendChild(document.createTextNode(`${winner} — ${stats.turns} turns`));
 
-  renderLineChart(
-    canvasIn(chartSection(container, "Net worth over time")),
-    stats.net_worth_by_turn.map((_, i) => String(i)),
-    playerNames.map((name, i) => ({
-      label: name,
-      data: stats.net_worth_by_turn.map((row) => row[i]),
-      color: colorForIndex(i),
-    })),
+  trackChart(
+    container,
+    renderLineChart(
+      canvasIn(chartSection(container, "Net worth over time")),
+      stats.net_worth_by_turn.map((_, i) => String(i)),
+      playerNames.map((name, i) => ({
+        label: name,
+        data: stats.net_worth_by_turn.map((row) => row[i]),
+        color: colorForIndex(i),
+      })),
+    ),
   );
 
-  renderBarChart(
-    canvasIn(chartSection(container, "Cash flow breakdown")),
-    playerNames,
-    CASH_FLOW_CATEGORIES.map((c) => ({
-      label: c.label,
-      data: stats.cash_flow.map((flow) => flow[c.key] as number),
-    })),
-    { stacked: true },
+  trackChart(
+    container,
+    renderBarChart(
+      canvasIn(chartSection(container, "Cash flow breakdown")),
+      playerNames,
+      CASH_FLOW_CATEGORIES.map((c) => ({
+        label: c.label,
+        data: stats.cash_flow.map((flow) => flow[c.key] as number),
+      })),
+      { stacked: true },
+    ),
   );
 
   const timelineSection = chartSection(container, "Property & monopoly timeline");
@@ -66,10 +73,13 @@ export function renderSingleRunCharts(container: HTMLElement, stats: PerGameStat
     ]),
   );
 
-  renderBarChart(
-    canvasIn(chartSection(container, "Dice roll distribution")),
-    Array.from({ length: 11 }, (_, i) => String(i + 2)),
-    [{ label: "Rolls", data: stats.dice_roll_counts }],
+  trackChart(
+    container,
+    renderBarChart(
+      canvasIn(chartSection(container, "Dice roll distribution")),
+      Array.from({ length: 11 }, (_, i) => String(i + 2)),
+      [{ label: "Rolls", data: stats.dice_roll_counts }],
+    ),
   );
 
   renderBoardHeatmap(chartSection(container, "Landing distribution"), stats.landing_counts);
@@ -77,10 +87,13 @@ export function renderSingleRunCharts(container: HTMLElement, stats: PerGameStat
   const roiByProperty = stats.property_roi
     .map((r) => ({ ...r, roi: r.cost_basis > 0 ? r.rent_collected / r.cost_basis : 0 }))
     .sort((a, b) => b.roi - a.roi);
-  renderBarChart(
-    canvasIn(chartSection(container, "ROI by property")),
-    roiByProperty.map((r) => spaceName(r.space)),
-    [{ label: "Rent collected / cost basis", data: roiByProperty.map((r) => r.roi) }],
-    { indexAxis: "y" },
+  trackChart(
+    container,
+    renderBarChart(
+      canvasIn(chartSection(container, "ROI by property")),
+      roiByProperty.map((r) => spaceName(r.space)),
+      [{ label: "Rent collected / cost basis", data: roiByProperty.map((r) => r.roi) }],
+      { indexAxis: "y" },
+    ),
   );
 }

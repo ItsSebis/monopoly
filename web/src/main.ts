@@ -105,8 +105,19 @@ function handleWorkerMessage(message: WorkerResponse): void {
 /** Asks the worker (which already has wasm loaded) to deterministically
  * re-simulate `(config, seed)` into a `SingleRunRecord` - used by both "View
  * stats" and "Save run" so neither needs to track the live game's own event
- * stream (docs/frontend.md). */
+ * stream (docs/frontend.md).
+ *
+ * Only one `buildRecord` round trip is tracked at a time: if "View stats"
+ * and "Save run" are both clicked before the first response lands, the
+ * earlier request is rejected immediately (rather than silently orphaned)
+ * so its caller's `finally` still runs and re-enables its button - without
+ * this, whichever response arrived second would find `pendingRecordRequest`
+ * already `null` and be dropped on the floor, leaving the first click's
+ * promise (and its button) hung forever. See also `newGameButton`'s click
+ * handler, which rejects any request still pending when the worker itself
+ * is torn down. */
 function requestRecord(config: GameConfig, seed: number): Promise<SingleRunRecord> {
+  pendingRecordRequest?.reject(new Error("Superseded by a newer request."));
   return new Promise((resolve, reject) => {
     pendingRecordRequest = { resolve, reject };
     worker.postMessage({ type: "buildRecord", config, seed });
@@ -241,6 +252,11 @@ speedSelect.addEventListener("change", () => {
 });
 
 newGameButton.addEventListener("click", () => {
+  // A terminated worker never posts back the "record"/"error" message a
+  // pending `requestRecord()` is waiting on, so without this its promise
+  // (and whichever of View stats/Save run triggered it) would hang forever.
+  pendingRecordRequest?.reject(new Error("Game was reset before this finished."));
+  pendingRecordRequest = null;
   worker.terminate();
   playback?.pause();
   playback = null;

@@ -6,7 +6,7 @@ This is the rules contract the `engine` crate must satisfy. It has two parts: th
 
 Standard 40-space board:
 
-- **GO** (space 0) — passing or landing collects the GO salary (default $200, configurable).
+- **GO** (space 0) — passing or landing collects the GO salary (default $200, configurable); see [Double GO salary](#double-go-salary) for the common house-rule variant.
 - **22 street properties** in 8 color groups (2–3 per group), each with a purchase price, a base rent, rent-with-monopoly (double base), and rent per house/hotel level (1–4 houses, then hotel).
 - **4 railroads** — rent depends on how many of the 4 the same owner holds ($25/$50/$100/$200 for 1/2/3/4 owned).
 - **2 utilities** (Electric Company, Water Works) — rent is a dice-roll multiplier: 4× the dice roll if the owner holds one utility, 10× if both.
@@ -43,8 +43,15 @@ Standard 40-space board:
 
 - A player must own every property in a color group (a monopoly) before building on any property in that group.
 - **Even-build rule** (toggle, default on): within a group, no property may have more than one more house than the least-built property in that group — houses must be built up evenly across the group.
-- The bank has a finite supply: 32 houses and 12 hotels (fixed baseline, not configurable — this scarcity is part of what makes real Monopoly strategy interesting). A hotel replacement returns that property's 4 houses to the bank supply.
+- The bank has a finite supply: 32 houses and 12 hotels (fixed baseline unless **Unlimited houses** below is enabled). A hotel replacement returns that property's 4 houses to the bank supply.
 - Building/selling houses is a strategy decision (`Strategy::decide_build`), called once at the end of the player's own turn (after all their movement/landing resolution for that turn), returning a batch of actions across any number of their monopolies at once — mirroring how real play typically happens between/around turns, as a single "building phase" rather than a separate decision per group.
+
+### Unlimited houses
+
+Configurable (`RuleSet.unlimited_houses`, default off, matching official rules) — a common house rule for groups that run out of physical pieces:
+
+- **Off** (default) — the bank's 32-house/12-hotel supply is a hard cap; building is refused once it's exhausted.
+- **On** — the supply cap is ignored entirely; a monopoly can be built up to hotels regardless of what's "left in the box." The bank's supply counters simply stop moving while this is on (there's nothing meaningful left for them to track), rather than being allowed to under/overflow.
 
 ## Mortgaging
 
@@ -76,6 +83,13 @@ Configurable (`RuleSet.free_parking_pot`):
 - **Off** (default, matches official rules) — landing on Free Parking has no effect; taxes and fees paid to the bank simply leave the game.
 - **On** (common house rule) — all money paid to the bank (taxes, fines, mortgage interest) accumulates in a pot; landing on Free Parking collects the entire pot.
 
+## Double GO salary
+
+Configurable (`RuleSet.double_go_salary`, default off, matching official rules) — the other most commonly cited GO-related house rule, alongside Free Parking's pot:
+
+- **Off** (default) — a flat GO salary regardless of whether a move passes GO or lands exactly on it.
+- **On** — landing **exactly** on GO pays double the normal salary; merely passing it on the way to another space still pays the normal (single) amount.
+
 ## Auctions
 
 Configurable (`RuleSet.auction_on_decline`, default on, matching official rules):
@@ -85,4 +99,10 @@ Configurable (`RuleSet.auction_on_decline`, default on, matching official rules)
 
 ## Trading
 
-Not part of the baseline or Phases 1–6. Player-initiated trades are a [Phase 7](./roadmap.md#phase-7--advanced-strategies-stretch) extension; documented here so it's clear the omission through Phase 6 is deliberate, not an oversight.
+Configurable (`RuleSet.trading_enabled`, default off — matching every other optional rule here, and giving the roadmap's Phase 7 demo an exact same-strategy-code before/after lever). Added in Phase 7; not part of the baseline or Phases 1–6.
+
+- When enabled, once at the end of `player`'s own turn (the same timing as the building phase), `Strategy::decide_trade` is called and may return a single proposed `TradeOffer`: properties and/or cash `player` would give up, and properties and/or cash they want back from a named counterparty.
+- **Validation** happens before the counterparty is even asked: every offered/requested property must actually be owned by the expected side, unmortgaged, and undeveloped (`houses == 0` — a built-up property must be sold down first, same precedent as mortgaging), the counterparty must be a different, non-bankrupt player, and both sides must be able to afford the cash side. An invalid proposal is silently dropped, matching how every other `Strategy` action here is validated rather than trusted.
+- A valid proposal is offered to the counterparty via `Strategy::decide_trade_response`. **This is a deliberate addition beyond the trait's original one-hook sketch** ([simulation-engine.md](./simulation-engine.md)): a trade means nothing without the other side's consent — the same reasoning that already makes `decide_auction_bid` ask every player, not just the current one. Real Monopoly trading is a back-and-forth negotiation; this models it as a single sealed accept/reject instead (no counter-offers), the same simplification auctions already make for the same reason — see [player-strategies.md](./player-strategies.md) for how the built-in strategies use this.
+- An accepted trade is applied atomically: both properties and both cash amounts move in one step, or nothing does.
+- Unlike the free-parking pot (see above), a trade's `TradeExecuted`/`TradeDeclined` event carries everything that moved, so it's fully replayable — batch/single-run statistics reconstruct it exactly, with no analogous gap.

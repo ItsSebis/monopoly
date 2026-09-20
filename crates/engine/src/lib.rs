@@ -32,4 +32,4 @@ pub use run_record::{
 };
 pub use stats::{compute_stats, PerGameStats};
 pub use strategies::STRATEGY_IDS;
-pub use strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};
+pub use strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy, TradeOffer};

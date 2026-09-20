@@ -47,6 +47,9 @@
             <label><input type="checkbox" name="even_build_rule" checked /> Even build rule</label>
             <label><input type="checkbox" name="auction_on_decline" checked /> Auction on decline</label>
             <label><input type="checkbox" name="free_parking_pot" /> Free parking pot</label>
+            <label><input type="checkbox" name="double_go_salary" /> Double GO salary</label>
+            <label><input type="checkbox" name="unlimited_houses" /> Unlimited houses</label>
+            <label><input type="checkbox" name="trading_enabled" /> Trading enabled</label>
             <label>Max turns (optional) <input type="number" name="max_turns" min="1" placeholder="unbounded" /></label>
           </fieldset>
 
@@ -76,6 +79,13 @@
               <option value="4" selected>4x</option>
               <option value="32">32x</option>
               <option value="0">Instant</option>
+            </select>
+          </label>
+          <label>
+            Board language
+            <select id="board-lang-select">
+              <option value="en">English</option>
+              <option value="de">Deutsch</option>
             </select>
           </label>
           <span id="turn-indicator"></span>

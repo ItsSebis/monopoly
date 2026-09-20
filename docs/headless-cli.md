@@ -27,6 +27,23 @@ monopoly batch --config game.toml --games 10000 --seed 42 --out results.json --c
 - `--archive-url` — `POST`s the same `BatchRunRecord` to a running server's `/runs` endpoint ([api.md](./api.md#post-runs)) after the local `--out`/`--csv`/summary handling completes, and prints the archived id.
 - Runs in parallel across available cores via the engine's `rayon`-based batch runner ([simulation-engine.md](./simulation-engine.md#batch-execution)); no server or GPU involved. Each game's per-turn detail is folded into the aggregate and discarded immediately, so peak memory stays roughly constant as `--games` grows rather than scaling with total turns played (see `batch.rs`'s module doc comment).
 - A batch with no `RuleSet.max_turns` set falls back to the engine's internal safety cap (20,000 turns) per game — for strategy mixes that don't reliably terminate without trading (see [game-rules.md](./game-rules.md#bankruptcy)), most of a large batch can be spent on games that never resolve. Setting `max_turns` in the config bounds this: a bounded 10,000-game batch typically finishes in well under a second, versus several seconds uncapped.
+- Shows a live progress bar (games completed / total) on stderr while running, gated on `stderr` actually being a terminal — piping stderr to a file or running in CI shows no bar, so scripted invocations and `--out`/`--csv` redirection stay clean.
+
+## `monopoly tournament` — every strategy against every other
+
+```sh
+monopoly tournament --games 5000
+monopoly tournament --strategies buy_good,buy_shrewd --games 2000 --rules rules-only.toml
+```
+
+A `Batch` whose player list is auto-generated instead of hand-written in a config file — one seat per strategy, so the resulting `head_to_head` matrix (same field `batch` produces) covers every pairing in one run.
+
+- `--strategies` — comma-separated strategy ids; defaults to every registered strategy (`monopoly_engine::STRATEGY_IDS`, so a newly-added custom strategy needs no CLI change to be included). Fails fast if fewer than 2 resolve, or any id is unrecognized — the same validation `batch`/`run` already do.
+- `--games` — total games (not per-pairing) — same meaning as `batch --games`.
+- `--seed` — same base-seed semantics as `batch`.
+- `--rules` — optional TOML/JSON file containing a full `RuleSet` (every field, same shape as `--config`'s `[rules]` table, just without `players` — those are generated from `--strategies`); defaults to `RuleSet::default()`. `RuleSet` only defaults `max_turns` and the house-rule toggles, so this can't be a partial override file — start from an existing `[rules]` table and edit it.
+- `--out` — same `BatchRunRecord` JSON shape `batch --out` writes.
+- With no `--out`, prints the same win-rate/ROI/head-to-head summary `batch` does, and shows the same progress bar.
 
 ## Config file format
 

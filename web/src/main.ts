@@ -2,6 +2,7 @@ import "./style.css";
 import * as api from "./api";
 import { parsePreservingSeeds } from "./bigJson";
 import { BoardView } from "./board/board";
+import { getBoardLang, parseBoardLang, setBoardLang } from "./board/layout";
 import { renderSingleRunCharts } from "./charts/singleRunCharts";
 import { renderBatchResults } from "./controls/batchResults";
 import { ConfigForm, type BatchPayload, type StartPayload } from "./controls/configForm";
@@ -44,9 +45,10 @@ const gameStatsEl = el("game-stats");
 const playPauseButton = el<HTMLButtonElement>("play-pause-button");
 const stepButton = el<HTMLButtonElement>("step-button");
 const speedSelect = el<HTMLSelectElement>("speed-select");
+const boardLangSelect = el<HTMLSelectElement>("board-lang-select");
 const newGameButton = el<HTMLButtonElement>("new-game-button");
 
-const board = new BoardView(boardContainer);
+const board = new BoardView(boardContainer, getBoardLang());
 let worker: Worker;
 let playback: PlaybackController | null = null;
 let playerNames: string[] = [];
@@ -236,6 +238,13 @@ navHistory.addEventListener("click", () => showView("history"));
 
 serverUrlInput.value = api.getServerUrl();
 serverUrlInput.addEventListener("change", () => api.setServerUrl(serverUrlInput.value));
+
+boardLangSelect.value = getBoardLang();
+boardLangSelect.addEventListener("change", () => {
+  const lang = parseBoardLang(boardLangSelect.value);
+  board.setLanguage(lang);
+  setBoardLang(lang);
+});
 
 playPauseButton.addEventListener("click", () => {
   if (!playback) return;

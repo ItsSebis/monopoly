@@ -16,7 +16,7 @@ use monopoly_engine::{
 };
 use proptest::prelude::*;
 
-const STRATEGY_IDS: [&str; 4] = ["buy_all", "buy_good", "buy_bad", "buy_none"];
+const STRATEGY_IDS: [&str; 5] = ["buy_all", "buy_good", "buy_bad", "buy_none", "buy_shrewd"];
 
 fn player_config() -> impl Strategy<Value = PlayerConfig> {
     proptest::sample::select(&STRATEGY_IDS[..]).prop_map(|s| PlayerConfig {
@@ -36,12 +36,24 @@ fn players_config() -> impl Strategy<Value = Vec<PlayerConfig>> {
 /// event-logged (see `monopoly_engine::stats`'s module doc comment), so
 /// reconciling it here would mean mirroring internal bookkeeping rather than
 /// replaying events — out of scope for this event-log-only check.
+/// `unlimited_houses` is left off:
+/// `bank_house_and_hotel_supply_always_balances` below asserts the bank's
+/// fixed 32/12 supply is always exactly conserved, which `unlimited_houses`
+/// deliberately breaks by design (see `game.rs`'s `try_build`) — fuzzing it
+/// here would fight the very invariant that test checks, rather than test
+/// it; covered instead by dedicated `game.rs` unit tests. `trading_enabled`
+/// and `double_go_salary` *are* fuzzed — `reconcile_final_cash` below has its
+/// own `TradeExecuted` arm and reads `PassGo`'s carried `amount` directly
+/// (rather than assuming the flat `rules.go_salary`), both independent of
+/// `stats.rs`'s equivalents.
 fn rule_set() -> impl Strategy<Value = RuleSet> {
     (
         500u32..3000,
         50u32..400,
         10u32..100,
         10u32..150,
+        any::<bool>(),
+        any::<bool>(),
         any::<bool>(),
         any::<bool>(),
         0u8..3,
@@ -54,6 +66,8 @@ fn rule_set() -> impl Strategy<Value = RuleSet> {
                 luxury_tax,
                 even_build_rule,
                 auction_on_decline,
+                trading_enabled,
+                double_go_salary,
                 tax_mode,
             )| {
                 let income_tax_mode = match tax_mode {
@@ -71,6 +85,9 @@ fn rule_set() -> impl Strategy<Value = RuleSet> {
                     auction_on_decline,
                     free_parking_pot: false,
                     max_turns: Some(300),
+                    double_go_salary,
+                    unlimited_houses: false,
+                    trading_enabled,
                 }
             },
         )
@@ -148,7 +165,7 @@ fn reconcile_final_cash(
         let env = &events[i];
         let mut skip = 0;
         match &env.event {
-            Event::PassGo => cash[env.player] += rules.go_salary as i64,
+            Event::PassGo { amount } => cash[env.player] += *amount as i64,
             Event::PropertyOffered { price, .. } => pending_offer_price = Some(*price),
             Event::PurchaseDecision { bought, .. } => {
                 let price = pending_offer_price.take();
@@ -250,6 +267,17 @@ fn reconcile_final_cash(
                     cash[*p] += remaining;
                 }
                 bankrupt[env.player] = true;
+            }
+            Event::TradeExecuted {
+                to,
+                offered_cash,
+                requested_cash,
+                ..
+            } => {
+                cash[env.player] -= *offered_cash as i64;
+                cash[*to] += *offered_cash as i64;
+                cash[*to] -= *requested_cash as i64;
+                cash[env.player] += *requested_cash as i64;
             }
             _ => {}
         }

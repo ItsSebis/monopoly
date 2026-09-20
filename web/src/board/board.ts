@@ -1,4 +1,4 @@
-import { BOARD_LAYOUT } from "./layout";
+import { BOARD_LAYOUT, displayName, type BoardLang } from "./layout";
 import type { EventEnvelope, GameState } from "../types";
 
 const JAIL_SPACE = 10;
@@ -11,8 +11,9 @@ const JAIL_SPACE = 10;
 export class BoardView {
   private spaceEls: HTMLElement[] = [];
   private tokenContainers: HTMLElement[] = [];
+  private nameEls: HTMLElement[] = [];
 
-  constructor(container: HTMLElement) {
+  constructor(container: HTMLElement, lang: BoardLang) {
     container.innerHTML = "";
     for (const space of BOARD_LAYOUT) {
       const el = document.createElement("div");
@@ -30,7 +31,7 @@ export class BoardView {
       el.appendChild(tokens);
       const name = document.createElement("div");
       name.className = "name";
-      name.textContent = space.name;
+      name.textContent = displayName(space, lang);
       el.appendChild(name);
       const houses = document.createElement("div");
       houses.className = "houses";
@@ -39,7 +40,17 @@ export class BoardView {
       container.appendChild(el);
       this.spaceEls.push(el);
       this.tokenContainers.push(tokens);
+      this.nameEls.push(name);
     }
+  }
+
+  /** Switches the board's own space labels between English and German - see
+   * `layout.ts`'s `BoardLang`. Nothing else about the board (colors,
+   * ownership, tokens) is language-dependent. */
+  setLanguage(lang: BoardLang): void {
+    BOARD_LAYOUT.forEach((space, index) => {
+      this.nameEls[index].textContent = displayName(space, lang);
+    });
   }
 
   /** Full re-sync to the engine's authoritative state - the ground truth,
@@ -85,12 +96,32 @@ export class BoardView {
     }
   }
 
+  /** Re-parents the token into its new space and animates the move with a
+   * FLIP transform (capture the old position, move, then transition back
+   * from an inverse transform to identity) rather than an instant snap -
+   * plain CSS transitions don't tween a DOM reparent by themselves, since
+   * the browser never treats the old and new parents as one continuous
+   * layout. Degrades gracefully to an instant snap at very high playback
+   * speeds, where a later call simply overwrites an already-in-flight
+   * transition before a frame paints. */
   private moveToken(player: number, space: number): void {
     const token = document.querySelector<HTMLElement>(`.token[data-player="${player}"]`);
     // Not found before the first `renderState()` creates the tokens - the
     // next full sync will place it correctly, so there's nothing to do here.
     if (!token) return;
+
+    const from = token.getBoundingClientRect();
     this.tokenContainers[space].appendChild(token);
+    const to = token.getBoundingClientRect();
+    const dx = from.left - to.left;
+    const dy = from.top - to.top;
+    if (dx === 0 && dy === 0) return;
+
+    token.style.transition = "none";
+    token.style.transform = `translate(${dx}px, ${dy}px)`;
+    token.getBoundingClientRect(); // forces a reflow so the line above takes effect before the next one
+    token.style.transition = "transform 250ms ease-out";
+    token.style.transform = "";
   }
 }
 

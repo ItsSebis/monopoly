@@ -9,6 +9,16 @@ function envelope(player: number, event: EventEnvelope["event"]): EventEnvelope 
 }
 
 describe("formatEvent", () => {
+  it("formats passing GO with the amount actually collected", () => {
+    expect(formatEvent(envelope(0, { type: "PassGo", payload: { amount: 200 } }), names)).toBe(
+      "Alice passed GO and collected $200",
+    );
+    // Under RuleSet.double_go_salary, landing exactly on GO carries double.
+    expect(formatEvent(envelope(0, { type: "PassGo", payload: { amount: 400 } }), names)).toBe(
+      "Alice passed GO and collected $400",
+    );
+  });
+
   it("formats rent paid with both players' names and the space", () => {
     const line = formatEvent(
       envelope(0, { type: "RentPaid", payload: { to: 1, amount: 44, space: 39 } }),
@@ -47,6 +57,45 @@ describe("formatEvent", () => {
     expect(
       formatEvent(envelope(0, { type: "GameEnded", payload: { winner: null, turns: 1000 } }), names),
     ).toBe("Game ended after 1000 turns with no winner");
+  });
+
+  it("formats an executed trade, including cash notes on either side", () => {
+    const swap = formatEvent(
+      envelope(0, {
+        type: "TradeExecuted",
+        payload: {
+          to: 1,
+          offered_properties: [1],
+          offered_cash: 0,
+          requested_properties: [3],
+          requested_cash: 0,
+        },
+      }),
+      names,
+    );
+    expect(swap).toBe("Alice traded with Bob: gave Mediterranean Avenue, received Baltic Avenue");
+
+    const withCash = formatEvent(
+      envelope(0, {
+        type: "TradeExecuted",
+        payload: {
+          to: 1,
+          offered_properties: [],
+          offered_cash: 100,
+          requested_properties: [3],
+          requested_cash: 0,
+        },
+      }),
+      names,
+    );
+    expect(withCash).toBe(
+      "Alice traded with Bob: gave nothing, received Baltic Avenue (+$100 to Bob)",
+    );
+  });
+
+  it("formats a declined trade", () => {
+    const line = formatEvent(envelope(0, { type: "TradeDeclined", payload: { to: 1 } }), names);
+    expect(line).toBe("Alice's trade offer to Bob was declined");
   });
 
   it("describes a card effect", () => {

@@ -55,7 +55,7 @@ export function formatEvent(env: EventEnvelope, playerNames: string[]): string {
     case "Move":
       return `${actor} moved to ${spaceName(e.payload.to)}`;
     case "PassGo":
-      return `${actor} passed GO`;
+      return `${actor} passed GO and collected $${e.payload.amount}`;
     case "PropertyOffered":
       return `${spaceName(e.payload.space)} ($${e.payload.price}) offered to ${actor}`;
     case "PurchaseDecision":
@@ -97,6 +97,19 @@ export function formatEvent(env: EventEnvelope, playerNames: string[]): string {
       return e.payload.payee === null
         ? `${actor} went bankrupt to the bank`
         : `${actor} went bankrupt to ${name(e.payload.payee)}`;
+    case "TradeExecuted": {
+      const gave = e.payload.offered_properties.map(spaceName).join(", ") || "nothing";
+      const got = e.payload.requested_properties.map(spaceName).join(", ") || "nothing";
+      const cashNote = [
+        e.payload.offered_cash > 0 ? `+$${e.payload.offered_cash} to ${name(e.payload.to)}` : null,
+        e.payload.requested_cash > 0 ? `+$${e.payload.requested_cash} from ${name(e.payload.to)}` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      return `${actor} traded with ${name(e.payload.to)}: gave ${gave}, received ${got}${cashNote ? ` (${cashNote})` : ""}`;
+    }
+    case "TradeDeclined":
+      return `${actor}'s trade offer to ${name(e.payload.to)} was declined`;
     case "GameEnded":
       return formatGameEnded(e.payload, playerNames);
   }

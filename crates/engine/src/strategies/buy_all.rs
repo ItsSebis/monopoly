@@ -1,6 +1,11 @@
-use super::{build_within_reserve, cash_above_reserve, raise_cash_cheapest_first};
+use super::{
+    accept_trade, build_within_reserve, cash_above_reserve, propose_monopoly_completing_trade,
+    raise_cash_cheapest_first,
+};
 use crate::state::GameView;
-use crate::strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy};
+use crate::strategy::{
+    BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy, TradeOffer,
+};
 
 /// Cash reserve kept back after a purchase or build — small, since Buy All
 /// is fully committed to accumulating property (see docs/player-strategies.md).
@@ -26,7 +31,7 @@ impl Strategy for BuyAll {
     }
 
     fn decide_build(&mut self, view: &GameView, player: usize) -> Vec<BuildAction> {
-        build_within_reserve(view, player, RESERVE)
+        build_within_reserve(view, player, RESERVE, false)
     }
 
     fn decide_mortgage(
@@ -41,5 +46,18 @@ impl Strategy for BuyAll {
     /// Bids everything above its reserve, on anything.
     fn decide_auction_bid(&mut self, view: &GameView, player: usize, _space: usize) -> Option<u32> {
         cash_above_reserve(view, player, RESERVE)
+    }
+
+    fn decide_trade(&mut self, view: &GameView, player: usize) -> Option<TradeOffer> {
+        propose_monopoly_completing_trade(view, player)
+    }
+
+    fn decide_trade_response(
+        &mut self,
+        view: &GameView,
+        player: usize,
+        offer: &TradeOffer,
+    ) -> bool {
+        accept_trade(view, player, offer)
     }
 }

@@ -124,10 +124,17 @@ impl Ratio {
 /// Runs one full game per seed, in parallel, and folds each into a shared
 /// aggregate. Games are independent (no shared mutable state), so this
 /// parallelizes trivially across `seeds`.
+///
+/// `on_game_done`, if given, is called once per completed game from whichever
+/// rayon worker thread finished it — used by the CLI to drive a progress bar
+/// (`indicatif::ProgressBar` is internally synchronized, so calling `.inc(1)`
+/// from many threads is safe). `None` for callers with no progress UI (the
+/// server's batch endpoint).
 pub fn run_batch(
     rules: RuleSet,
     players: Vec<PlayerConfig>,
     seeds: &[u64],
+    on_game_done: Option<&(dyn Fn() + Sync)>,
 ) -> Result<BatchResult, ConfigError> {
     // Validated once up front so a config mistake fails the whole batch
     // immediately rather than only once rayon gets around to that seed.
@@ -153,6 +160,9 @@ pub fn run_batch(
                 property_roi: stats.property_roi,
                 final_net_worth: stats.net_worth_by_turn.last().cloned().unwrap_or_default(),
             };
+            if let Some(cb) = on_game_done {
+                cb();
+            }
             (summary, contribution)
         })
         .collect();
@@ -290,6 +300,7 @@ mod tests {
             RuleSet::default(),
             players(&["buy_all", "buy_none"]),
             &seeds,
+            None,
         )
         .unwrap();
         assert_eq!(result.aggregate.games, 200);
@@ -310,6 +321,7 @@ mod tests {
             RuleSet::default(),
             players(&["not_a_real_strategy", "buy_none"]),
             &[1, 2, 3],
+            None,
         );
         assert!(matches!(err, Err(ConfigError::UnknownStrategy(_))));
     }
@@ -318,8 +330,8 @@ mod tests {
     fn same_base_seed_reproduces_the_same_batch_result() {
         let seeds = vec![7, 8, 9];
         let players = players(&["buy_good", "buy_bad"]);
-        let a = run_batch(RuleSet::default(), players.clone(), &seeds).unwrap();
-        let b = run_batch(RuleSet::default(), players, &seeds).unwrap();
+        let a = run_batch(RuleSet::default(), players.clone(), &seeds, None).unwrap();
+        let b = run_batch(RuleSet::default(), players, &seeds, None).unwrap();
         let summaries = |r: &BatchResult| {
             r.per_game
                 .iter()

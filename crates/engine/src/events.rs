@@ -31,7 +31,13 @@ pub enum Event {
         from: usize,
         to: usize,
     },
-    PassGo,
+    /// `amount` is what was actually paid — `rules.go_salary`, or double that
+    /// under `RuleSet.double_go_salary` when landing exactly on GO — carried
+    /// explicitly since replaying this event (`stats.rs`,
+    /// `reconcile_final_cash`) has no other way to tell the two apart.
+    PassGo {
+        amount: u32,
+    },
     PropertyOffered {
         space: usize,
         price: u32,
@@ -100,6 +106,22 @@ pub enum Event {
     /// return to their decks).
     Bankrupted {
         payee: Option<usize>,
+    },
+    /// A trade `player` proposed to `to` (see `Strategy::decide_trade`) that
+    /// `to` accepted and the engine successfully applied. `player`'s side
+    /// gave up `offered_properties`/`offered_cash` and received
+    /// `requested_properties`/`requested_cash` in return.
+    TradeExecuted {
+        to: usize,
+        offered_properties: Vec<usize>,
+        offered_cash: u32,
+        requested_properties: Vec<usize>,
+        requested_cash: u32,
+    },
+    /// A trade `player` proposed to `to` that `to` declined (or that failed
+    /// re-validation — see `Game::maybe_trade`). No state changed.
+    TradeDeclined {
+        to: usize,
     },
     GameEnded {
         winner: Option<usize>,

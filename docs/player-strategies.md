@@ -20,15 +20,26 @@ A deliberately suboptimal baseline, included so batch analysis has a clear "wors
 
 Never buys, never bids in auctions, never builds, never mortgages (it owns nothing to mortgage). Used as a floor-line control. Still makes jail decisions using the same logic as Buy Good, since jail behavior isn't tied to ownership.
 
+### Buy Shrewd
+
+Added in Phase 7, combining every gap the "Where the built-in strategies diverge from this" section below names into one strategy, rather than four separate registrations. Otherwise plays like a more aggressive Buy Good (same rent-to-price-plus-monopoly-bonus scoring, threshold, and cheapest-first mortgage behavior; a $100 reserve, between Buy All's and Buy Good's):
+
+- **Landing-frequency-weighted valuation**: every candidate score is multiplied by a static per-group weight (Orange ×1.3, Red ×1.15, everything else ×1.0), from the Markov-chain research cited below — the exact gap Buy Good's own doc comment above says was considered and skipped.
+- **House-supply-denial building**: develops every held monopoly up to 4 houses but never converts to a hotel, deliberately keeping the bank's fixed 32-house stock locked up rather than freeing 4 houses back on hoteling.
+- **Opponent-hotel-risk jail policy**: leaves jail quickly while no *opponent* holds a built-up monopoly yet (the board's still open), but stays once one does — the mirror image of Buy Good's own-monopoly-based jail logic, keyed on the risk of landing on someone else's hotel rather than on the acting player's own holdings.
+- **Auction denial bidding**: if a single other player already owns every other member of a group up for auction, bids up to full affordability regardless of its own valuation, purely to block that player's monopoly.
+- **Trading**: uses the same monopoly-completing heuristic Buy All/Buy Good share (see below).
+
 ## Decision summary by strategy
 
-| Decision | Buy All | Buy Good | Buy Bad | Buy None |
-|---|---|---|---|---|
-| Purchase | Always, if reserve allows | Threshold heuristic | Inverse heuristic | Never |
-| Auction bid | Up to affordability minus reserve | Up to heuristic value | Overbids on poor properties | Always abstains |
-| Build | ASAP once monopoly held, $50 reserve | Same, $150 reserve | Never (see above) | Never (owns nothing) |
-| Mortgage / sell houses | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | N/A (owns nothing) |
-| Jail (no card held) | Pay if affordable | Stay early, pay once profitable | Roll for doubles (default) | Same as Buy Good |
+| Decision | Buy All | Buy Good | Buy Bad | Buy None | Buy Shrewd |
+|---|---|---|---|---|---|
+| Purchase | Always, if reserve allows | Threshold heuristic | Inverse heuristic | Never | Threshold heuristic, landing-frequency-weighted |
+| Auction bid | Up to affordability minus reserve | Up to heuristic value | Overbids on poor properties | Always abstains | Denial bid if it'd block an opponent's monopoly, else weighted heuristic value |
+| Build | ASAP once monopoly held, $50 reserve | Same, $150 reserve | Never (see above) | Never (owns nothing) | ASAP to 4 houses, $100 reserve, never hotels (supply denial) |
+| Mortgage / sell houses | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | N/A (owns nothing) | Cheapest-first, to avoid bankruptcy |
+| Jail (no card held) | Pay if affordable | Stay early, pay once profitable | Roll for doubles (default) | Same as Buy Good | Leave while no opponent has built up, stay once one does |
+| Trade (`RuleSet.trading_enabled`, Phase 7) | Proposes/accepts monopoly-completing swaps (see below) | Same logic as Buy All | Never proposes or accepts | Never proposes or accepts | Same logic as Buy All |
 
 A held "Get Out of Jail Free" card is always used automatically for every strategy, before `decide_jail_action` is even called — see [game-rules.md](./game-rules.md#jail).
 
@@ -70,18 +81,19 @@ Source: [The Econ Professor](https://theeconprofessor.com/using-monopoly-auction
 
 ### Trading
 
-The clearest connection back to this project: research on games without trading finds that only the *easiest-to-complete-by-chance* monopolies (small, 2-property groups like Brown or Dark Blue) tend to actually form, while larger, statistically better 3-property groups (Orange, Red, etc. — see above) usually end up split across players and never get built. That is the exact stalemate this engine's own Phase 1/2 batch runs already measured and documented independently (see [game-rules.md](./game-rules.md#bankruptcy)) — the external research corroborates rather than adds to that finding. It's a concrete, mechanism-backed reason to expect Phase 7's trading (`Strategy::decide_trade`, see [roadmap.md](./roadmap.md#phase-7--advanced-strategies-stretch)) to matter a great deal in practice, not just add surface area.
+The clearest connection back to this project: research on games without trading finds that only the *easiest-to-complete-by-chance* monopolies (small, 2-property groups like Brown or Dark Blue) tend to actually form, while larger, statistically better 3-property groups (Orange, Red, etc. — see above) usually end up split across players and never get built. That is the exact stalemate this engine's own Phase 1/2 batch runs already measured and documented independently (see [game-rules.md](./game-rules.md#bankruptcy)) — the external research corroborates rather than adds to that finding. It's a concrete, mechanism-backed reason to expect Phase 7's trading to matter a great deal in practice, not just add surface area.
+
+**Buy All and Buy Good** (identical trading logic, differing only in every other decision) implement exactly this: `propose_monopoly_completing_trade` scans for a color group where the strategy owns all but one property and a single other player owns the rest, then proposes either a direct swap (if the strategy holds a "spare" property — one it doesn't otherwise need — that would complete a *different* group for that same counterparty) or a cash offer at a 1.5x premium over the missing property's list price. `decide_trade_response` accepts an incoming offer if it would complete a monopoly, or if it's a pure cash buyout paying more than the requested properties' list price. **Buy Bad and Buy None** never propose or accept a trade — consistent with their existing "does the least" character. `docs/game-rules.md#trading` has the full validation/execution mechanics.
 
 ### Where the built-in strategies diverge from this
 
-- **None of the four weight purchases or auction bids by landing frequency** — Buy Good's heuristic explicitly considers rent-to-price and monopoly proximity but not the Orange/Red traffic advantage documented above (already noted as a deliberate simplification when Buy Good was implemented — see above).
-- **No strategy implements phase-dependent jail policy** framed around opponents' hotel risk specifically (closest is Buy Good's monopoly-ownership-based rule, which is related but not the same reasoning).
-- **No strategy does house-supply-denial building** or **auction denial bidding** — all building and bidding is for the acting strategy's own benefit, never to sabotage an opponent's plans.
+Historical note (true through Phase 6, before Buy Shrewd): none of Buy All/Good/Bad/None weighted purchases or bids by landing frequency, implemented an opponents'-hotel-risk jail policy, or did house-supply-denial/auction-denial — all building and bidding was purely for the acting strategy's own benefit. **Buy Shrewd (above) now covers all four.** Two items remain open:
+
 - **Buy All's $50 reserve** is thinner than the low-hundreds figure suggested online, though there's no rigorous benchmark to compare it against precisely.
-- These are documented gaps, not necessarily bugs to fix — the built-ins are meant to be simple, legible reference points for batch comparison (see [analysis-and-metrics.md](./analysis-and-metrics.md)), and a strategy implementing some or all of the above is exactly the kind of "custom strategy" this trait is designed to support (see below).
+- Buy Good/Buy All/Buy Shrewd's trading logic (`propose_monopoly_completing_trade`) only ever proposes a *direct* monopoly-completing swap; it doesn't negotiate combinations (e.g. two properties plus cash) or evaluate a trade that would help the counterparty more than itself but still be net-positive. A more sophisticated trade-evaluation heuristic is a reasonable further "custom strategy" (see below), not something the built-ins need to chase.
 
 ## Custom strategies
 
-Anything implementing the `Strategy` trait can be used interchangeably with the built-ins — by the CLI (`--strategy` referencing a registered implementation or a scripted config), by the server for batch dispatch, and by the browser's strategy picker (which lists whatever strategies the running engine build has registered). As of Phase 2, the trait has no default method implementations — a custom strategy must implement all five hooks, even a trivial one for a hook it doesn't care about (e.g. `decide_build` returning an empty `Vec`). Default implementations (e.g. mirroring Buy Good) are a reasonable future addition once a real custom strategy actually needs to override only one or two hooks; nothing in Phase 1-2 does.
+Anything implementing the `Strategy` trait can be used interchangeably with the built-ins — by the CLI (`--strategy` referencing a registered implementation or a scripted config), by the server for batch dispatch, and by the browser's strategy picker (which lists whatever strategies the running engine build has registered). As of Phase 7, the trait has no default method implementations — a custom strategy must implement all seven hooks, even a trivial one for a hook it doesn't care about (e.g. `decide_build` returning an empty `Vec`, or `decide_trade` returning `None`). Default implementations (e.g. mirroring Buy Good) are a reasonable future addition once a real custom strategy actually needs to override only one or two hooks; nothing built-in does.
 
 Parameterized variants (e.g. "Buy Good with a $300 reserve" instead of $150) are expressed as config on top of a base strategy rather than as wholly new types — see `StrategyConfig` in [data-model.md](./data-model.md#playerconfig).

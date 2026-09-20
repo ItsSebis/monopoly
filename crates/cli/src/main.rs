@@ -1,13 +1,31 @@
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
 use monopoly_engine::{
     build_batch_run_record, compute_stats, derive_batch_seeds, BatchRunRecord, Board, Game,
-    GameConfig, GameResult, PerGameStats, PlayerConfig, SingleRunRecord,
+    GameConfig, GameResult, PerGameStats, PlayerConfig, RuleSet, SingleRunRecord, STRATEGY_IDS,
 };
+use serde::de::DeserializeOwned;
 use serde::Serialize;
+
+/// A live per-game progress bar to stderr when it's a real terminal; a
+/// no-op, non-drawing bar otherwise (piped/redirected output, or CI) so
+/// `--out`/`--csv` usage and scripted invocations stay clean.
+fn progress_bar(games: usize) -> ProgressBar {
+    if !std::io::stderr().is_terminal() {
+        return ProgressBar::hidden();
+    }
+    let bar = ProgressBar::new(games as u64);
+    bar.set_style(
+        ProgressStyle::with_template("{bar:40} {pos}/{len} games ({eta} left)")
+            .expect("valid progress bar template"),
+    );
+    bar
+}
 
 #[derive(Parser)]
 #[command(name = "monopoly", about = "Headless Monopoly simulator")]
@@ -60,6 +78,31 @@ enum Command {
         #[arg(long)]
         archive_url: Option<String>,
     },
+    /// Run a batch with every registered strategy in it, one seat each, and
+    /// report the pairwise results.
+    Tournament {
+        /// Comma-separated strategy ids to include; defaults to every
+        /// registered strategy (`STRATEGY_IDS`).
+        #[arg(long, value_delimiter = ',')]
+        strategies: Option<Vec<String>>,
+        /// Total number of games to run.
+        #[arg(long)]
+        games: usize,
+        /// Base seed the per-game seeds are deterministically derived from;
+        /// a random one is generated (and printed) if omitted.
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Path to a TOML or JSON file containing a full `RuleSet` (every
+        /// field - same shape as `--config`'s `[rules]` table, just without
+        /// `players`, which come from `--strategies` instead); defaults to
+        /// `RuleSet::default()`.
+        #[arg(long)]
+        rules: Option<PathBuf>,
+        /// Write the full batch result as JSON here instead of printing a
+        /// summary.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -85,6 +128,13 @@ fn main() -> ExitCode {
             csv.as_deref(),
             archive_url.as_deref(),
         ),
+        Command::Tournament {
+            strategies,
+            games,
+            seed,
+            rules,
+            out,
+        } => tournament(strategies, games, seed, rules.as_deref(), out.as_deref()),
     }
 }
 
@@ -94,7 +144,7 @@ fn run(
     out: Option<&Path>,
     archive_url: Option<&str>,
 ) -> ExitCode {
-    let config = match load_config(config_path) {
+    let config: GameConfig = match load_config(config_path) {
         Ok(c) => c,
         Err(e) => return fail(&e),
     };
@@ -155,17 +205,15 @@ fn batch(
     csv: Option<&Path>,
     archive_url: Option<&str>,
 ) -> ExitCode {
-    let config = match load_config(config_path) {
+    let config: GameConfig = match load_config(config_path) {
         Ok(c) => c,
         Err(e) => return fail(&e),
     };
 
     let base_seed = seed.unwrap_or_else(rand::random);
-    let seeds = derive_batch_seeds(base_seed, games);
-
-    let record = match build_batch_run_record(config.rules, config.players, seeds) {
+    let record = match run_batch_with_progress(config.rules, config.players, games, base_seed) {
         Ok(r) => r,
-        Err(e) => return fail(&e.to_string()),
+        Err(e) => return fail(&e),
     };
 
     if let Some(path) = csv {
@@ -179,18 +227,8 @@ fn batch(
         );
     }
 
-    match out {
-        Some(path) => {
-            if let Err(e) = write_json(path, &record) {
-                return fail(&e);
-            }
-            println!(
-                "base seed {base_seed}: wrote {} games to {}",
-                record.per_game_summary.len(),
-                path.display()
-            );
-        }
-        None => print_batch_summary(base_seed, &record),
+    if let Err(e) = write_or_print_batch(out, base_seed, &record) {
+        return fail(&e);
     }
 
     if let Some(url) = archive_url {
@@ -202,12 +240,101 @@ fn batch(
     ExitCode::SUCCESS
 }
 
+/// Every strategy against every other, one seat each, in a single batch —
+/// `AggregateStats::head_to_head` (`batch.rs`) already computes the full
+/// pairwise matrix for however many strategies share one game, so this is
+/// `batch()`'s exact pipeline with an auto-generated player list instead of
+/// a hand-written config file.
+fn tournament(
+    strategies: Option<Vec<String>>,
+    games: usize,
+    seed: Option<u64>,
+    rules_path: Option<&Path>,
+    out: Option<&Path>,
+) -> ExitCode {
+    let ids: Vec<String> =
+        strategies.unwrap_or_else(|| STRATEGY_IDS.iter().map(|s| s.to_string()).collect());
+    if ids.len() < 2 {
+        return fail(&format!(
+            "need at least 2 strategies, got {} ({})",
+            ids.len(),
+            ids.join(",")
+        ));
+    }
+    let rules = match rules_path {
+        Some(path) => match load_config(path) {
+            Ok(r) => r,
+            Err(e) => return fail(&e),
+        },
+        None => RuleSet::default(),
+    };
+    let players: Vec<PlayerConfig> = ids
+        .iter()
+        .map(|id| PlayerConfig {
+            name: id.clone(),
+            strategy: id.clone(),
+        })
+        .collect();
+
+    let base_seed = seed.unwrap_or_else(rand::random);
+    let record = match run_batch_with_progress(rules, players, games, base_seed) {
+        Ok(r) => r,
+        Err(e) => return fail(&e),
+    };
+
+    if let Err(e) = write_or_print_batch(out, base_seed, &record) {
+        return fail(&e);
+    }
+
+    ExitCode::SUCCESS
+}
+
+/// Runs `games` games, each seeded deterministically from `base_seed`, with
+/// a progress bar that's cleared before anything is printed over it. Shared
+/// by `batch` and `tournament`, which differ only in where the player list
+/// comes from.
+fn run_batch_with_progress(
+    rules: RuleSet,
+    players: Vec<PlayerConfig>,
+    games: usize,
+    base_seed: u64,
+) -> Result<BatchRunRecord, String> {
+    let seeds = derive_batch_seeds(base_seed, games);
+    let bar = progress_bar(games);
+    let record = build_batch_run_record(rules, players, seeds, Some(&|| bar.inc(1)));
+    bar.finish_and_clear();
+    record.map_err(|e| e.to_string())
+}
+
+/// `--out` writes the whole record as JSON; without it, the human-readable
+/// summary goes to stdout instead.
+fn write_or_print_batch(
+    out: Option<&Path>,
+    base_seed: u64,
+    record: &BatchRunRecord,
+) -> Result<(), String> {
+    let Some(path) = out else {
+        print_batch_summary(base_seed, record);
+        return Ok(());
+    };
+    write_json(path, record)?;
+    println!(
+        "base seed {base_seed}: wrote {} games to {}",
+        record.per_game_summary.len(),
+        path.display()
+    );
+    Ok(())
+}
+
 fn fail(message: &str) -> ExitCode {
     eprintln!("error: {message}");
     ExitCode::FAILURE
 }
 
-fn load_config(path: &Path) -> Result<GameConfig, String> {
+/// Reads a config file as JSON or TOML, picked by extension: a full
+/// `GameConfig` (`run`/`batch`), or just a `RuleSet` for `tournament`, whose
+/// player list is auto-generated instead.
+fn load_config<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
     if path.extension().is_some_and(|ext| ext == "json") {
         serde_json::from_str(&text).map_err(|e| format!("parsing {} as JSON: {e}", path.display()))

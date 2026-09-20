@@ -3,9 +3,9 @@
 // engine already computed onto charts/tables - no stat is recomputed here.
 import { spaceName } from "../board/layout";
 import { renderBarChart } from "./barChart";
+import { renderDiceAndLandingSections } from "./commonSections";
 import { colorForIndex } from "./colors";
 import { canvasIn, chartSection, destroyCharts, renderTable, trackChart } from "./domHelpers";
-import { renderBoardHeatmap } from "./heatmap";
 import { renderLineChart } from "./lineChart";
 import type { PerGameStats } from "../types";
 
@@ -73,16 +73,7 @@ export function renderSingleRunCharts(container: HTMLElement, stats: PerGameStat
     ]),
   );
 
-  trackChart(
-    container,
-    renderBarChart(
-      canvasIn(chartSection(container, "Dice roll distribution")),
-      Array.from({ length: 11 }, (_, i) => String(i + 2)),
-      [{ label: "Rolls", data: stats.dice_roll_counts }],
-    ),
-  );
-
-  renderBoardHeatmap(chartSection(container, "Landing distribution"), stats.landing_counts);
+  renderDiceAndLandingSections(container, stats.dice_roll_counts, stats.landing_counts);
 
   const roiByProperty = stats.property_roi
     .map((r) => ({ ...r, roi: r.cost_basis > 0 ? r.rent_collected / r.cost_basis : 0 }))

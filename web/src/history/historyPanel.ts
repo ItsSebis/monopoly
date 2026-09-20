@@ -5,11 +5,18 @@
 import { deleteRun, getRun, getRuns } from "../api";
 import { renderBatchResults } from "../controls/batchResults";
 import { renderSingleRunCharts } from "../charts/singleRunCharts";
+import { actionsCell, renderTable } from "../charts/domHelpers";
 import { listRecent, pushRecent, removeRecent, summaryOf } from "./recentRunsCache";
 import type { PlayerConfig, RunDetail, RunSummary, RuleSet } from "../types";
 
 export interface HistoryPanelHandlers {
   onReplay: (ruleSet: RuleSet, players: PlayerConfig[], seed: number, playerNames: string[]) => void;
+}
+
+function resultFor(run: RunSummary): string {
+  if (run.kind === "batch") return `${run.games ?? "?"} games`;
+  if (run.winner == null) return "No winner";
+  return run.players[run.winner]?.name ?? `Player ${run.winner}`;
 }
 
 export class HistoryPanel {
@@ -42,43 +49,28 @@ export class HistoryPanel {
       this.listEl.appendChild(note);
     }
 
-    const table = document.createElement("table");
-    const headRow = document.createElement("tr");
-    ["Created", "Kind", "Strategies", "Result", ""].forEach((h) => {
-      const th = document.createElement("th");
-      th.textContent = h;
-      headRow.appendChild(th);
-    });
-    table.appendChild(headRow);
+    renderTable(
+      this.listEl,
+      ["Created", "Kind", "Strategies", "Result", ""],
+      runs.map((run) => {
+        const openButton = document.createElement("button");
+        openButton.type = "button";
+        openButton.textContent = "Open";
+        openButton.addEventListener("click", () => this.open(run.id));
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.textContent = "Delete";
+        deleteButton.addEventListener("click", () => this.remove(run.id));
 
-    for (const run of runs) {
-      const tr = document.createElement("tr");
-      const result =
-        run.kind === "single"
-          ? run.winner == null
-            ? "No winner"
-            : (run.players[run.winner]?.name ?? `Player ${run.winner}`)
-          : `${run.games ?? "?"} games`;
-      [run.created_at, run.kind, run.players.map((p) => p.strategy).join(", "), result].forEach((text) => {
-        const td = document.createElement("td");
-        td.textContent = text;
-        tr.appendChild(td);
-      });
-
-      const actionTd = document.createElement("td");
-      const openButton = document.createElement("button");
-      openButton.type = "button";
-      openButton.textContent = "Open";
-      openButton.addEventListener("click", () => this.open(run.id));
-      const deleteButton = document.createElement("button");
-      deleteButton.type = "button";
-      deleteButton.textContent = "Delete";
-      deleteButton.addEventListener("click", () => this.remove(run.id));
-      actionTd.append(openButton, deleteButton);
-      tr.appendChild(actionTd);
-      table.appendChild(tr);
-    }
-    this.listEl.appendChild(table);
+        return [
+          run.created_at,
+          run.kind,
+          run.players.map((p) => p.strategy).join(", "),
+          resultFor(run),
+          actionsCell(openButton, deleteButton),
+        ];
+      }),
+    );
   }
 
   private async open(id: string): Promise<void> {

@@ -2,8 +2,9 @@
 // "Batch-only metrics" table from an `AggregateStats`. Purely a projection
 // of numbers the engine already computed onto charts/tables.
 import { renderBarChart } from "./barChart";
+import { renderDiceAndLandingSections } from "./commonSections";
 import { canvasIn, chartSection, destroyCharts, trackChart } from "./domHelpers";
-import { colorFor, renderBoardHeatmap } from "./heatmap";
+import { colorFor } from "./heatmap";
 import { bucket } from "./histogram";
 import type { AggregateStats } from "../types";
 
@@ -95,14 +96,5 @@ export function renderBatchCharts(container: HTMLElement, stats: AggregateStats)
   renderHistogramSection(container, "Game length distribution", stats.game_length);
   renderHistogramSection(container, "Bankruptcy turn distribution", stats.bankruptcy_turns);
 
-  trackChart(
-    container,
-    renderBarChart(
-      canvasIn(chartSection(container, "Dice roll distribution")),
-      Array.from({ length: 11 }, (_, i) => String(i + 2)),
-      [{ label: "Rolls", data: stats.dice_roll_counts }],
-    ),
-  );
-
-  renderBoardHeatmap(chartSection(container, "Landing distribution"), stats.landing_counts);
+  renderDiceAndLandingSections(container, stats.dice_roll_counts, stats.landing_counts);
 }

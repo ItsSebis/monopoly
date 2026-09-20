@@ -3,6 +3,7 @@
 // the batch's own (rule_set, players, seed), not a second, event-log-driven
 // renderer (docs/frontend.md's replay-pipeline-reuse decision).
 import { renderBatchCharts } from "../charts/batchCharts";
+import { actionsCell, renderTable } from "../charts/domHelpers";
 import type { BatchRunRecord } from "../types";
 
 export function renderBatchResults(
@@ -21,32 +22,20 @@ export function renderBatchResults(
   heading.textContent = "Games";
   container.appendChild(heading);
 
-  const table = document.createElement("table");
-  const headRow = document.createElement("tr");
-  ["Seed", "Winner", "Turns", ""].forEach((h) => {
-    const th = document.createElement("th");
-    th.textContent = h;
-    headRow.appendChild(th);
-  });
-  table.appendChild(headRow);
-
-  for (const game of record.per_game_summary) {
-    const tr = document.createElement("tr");
-    [String(game.seed), game.winner === null ? "—" : playerNames[game.winner], String(game.turns)].forEach(
-      (text) => {
-        const td = document.createElement("td");
-        td.textContent = text;
-        tr.appendChild(td);
-      },
-    );
-    const actionTd = document.createElement("td");
-    const replayButton = document.createElement("button");
-    replayButton.type = "button";
-    replayButton.textContent = "Replay";
-    replayButton.addEventListener("click", () => onReplay(game.seed));
-    actionTd.appendChild(replayButton);
-    tr.appendChild(actionTd);
-    table.appendChild(tr);
-  }
-  container.appendChild(table);
+  renderTable(
+    container,
+    ["Seed", "Winner", "Turns", ""],
+    record.per_game_summary.map((game) => {
+      const replayButton = document.createElement("button");
+      replayButton.type = "button";
+      replayButton.textContent = "Replay";
+      replayButton.addEventListener("click", () => onReplay(game.seed));
+      return [
+        game.seed,
+        game.winner === null ? "—" : playerNames[game.winner],
+        game.turns,
+        actionsCell(replayButton),
+      ];
+    }),
+  );
 }

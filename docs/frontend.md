@@ -68,7 +68,7 @@ The response's `aggregate_stats` renders through [Charts](#charts); its `per_gam
 
 ## Charts
 
-`charts/` renders every metric in [analysis-and-metrics.md](./analysis-and-metrics.md) from whatever `final_stats`/`aggregate_stats` came back with the run — `singleRunCharts.ts` and `batchCharts.ts` share the small `barChart.ts`/`lineChart.ts`/`histogram.ts`/`heatmap.ts`/`domHelpers.ts` building blocks. Chart.js (bar, stacked bar, line) covers every metric it has a native type for; three metrics get a dependency-light substitute instead of a second charting library:
+`charts/` renders every metric in [analysis-and-metrics.md](./analysis-and-metrics.md) from whatever `final_stats`/`aggregate_stats` came back with the run — `singleRunCharts.ts` and `batchCharts.ts` share the small `barChart.ts`/`lineChart.ts`/`histogram.ts`/`heatmap.ts`/`domHelpers.ts`/`commonSections.ts` building blocks (the dice-roll and landing-distribution sections are identical between the two, so `commonSections.ts` renders both). Chart.js (bar, stacked bar, line) covers every metric it has a native type for; three metrics get a dependency-light substitute instead of a second charting library:
 
 - **Property/monopoly timeline** ("Timeline/Gantt-style" per the docs) renders as a plain sorted table — adding a Gantt library for one table-shaped view isn't worth it.
 - **Strategy head-to-head matrix** and the **board heatmap** (dice/landing distribution overlay) render as CSS-colored grids (`charts/heatmap.ts`'s `colorFor` scale) rather than a Chart.js matrix plugin; the heatmap reuses `board/layout.ts`'s 40-space table with no tokens/ownership, since it's a read-only overlay, not a game in progress.

@@ -1,6 +1,7 @@
-// Tiny DOM builders shared by singleRunCharts.ts and batchCharts.ts - not
-// stats logic, just the repeated "labeled section" / "canvas" / "table"
-// shapes both dashboards are made of.
+// Tiny DOM builders shared by singleRunCharts.ts, batchCharts.ts, and the
+// two plain data tables in historyPanel.ts/batchResults.ts - not stats
+// logic, just the repeated "labeled section" / "canvas" / "table" shapes
+// those views are made of.
 import type { Chart } from "./chartSetup";
 
 /** Chart.js instances created for a given dashboard container, so a
@@ -42,7 +43,19 @@ export function canvasIn(parent: HTMLElement): HTMLCanvasElement {
   return canvas;
 }
 
-export function renderTable(parent: HTMLElement, headers: string[], rows: (string | number)[][]): void {
+export type TableCell = string | number | HTMLElement;
+
+/** Wraps one or more buttons for use as a `renderTable` action-column cell -
+ * a plain `HTMLElement` cell is appended as-is, so this is just a container
+ * for when a row needs more than one. */
+export function actionsCell(...buttons: HTMLButtonElement[]): HTMLElement {
+  const span = document.createElement("span");
+  span.className = "table-actions";
+  span.append(...buttons);
+  return span;
+}
+
+export function renderTable(parent: HTMLElement, headers: string[], rows: TableCell[][]): void {
   const el = document.createElement("table");
   const headRow = document.createElement("tr");
   headers.forEach((h) => {
@@ -64,7 +77,8 @@ export function renderTable(parent: HTMLElement, headers: string[], rows: (strin
     const tr = document.createElement("tr");
     row.forEach((cell) => {
       const td = document.createElement("td");
-      td.textContent = String(cell);
+      if (cell instanceof HTMLElement) td.appendChild(cell);
+      else td.textContent = String(cell);
       tr.appendChild(td);
     });
     el.appendChild(tr);

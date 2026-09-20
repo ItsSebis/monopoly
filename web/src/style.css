@@ -222,6 +222,11 @@ table td {
   text-align: center;
 }
 
+.table-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
 .busy-indicator {
   font-style: italic;
 }

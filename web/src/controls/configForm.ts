@@ -91,18 +91,6 @@ export class ConfigForm {
     });
   }
 
-  private mode(): "live" | "batch" {
-    const checked = this.formEl.querySelector<HTMLInputElement>('input[name="run_mode"]:checked');
-    return checked?.value === "batch" ? "batch" : "live";
-  }
-
-  private updateModeFields(): void {
-    const batch = this.mode() === "batch";
-    this.seedField.hidden = batch;
-    this.gameCountField.hidden = !batch;
-    this.startButton.textContent = batch ? "Run batch" : "Start";
-  }
-
   /** Disables the submit button while a batch request is in flight - a
    * batch is one synchronous request/response (docs/frontend.md), so this is
    * the whole of the "progress indicator" for it. */
@@ -135,6 +123,18 @@ export class ConfigForm {
     this.formEl.querySelector<HTMLElement>("#loading-note")!.hidden = false;
     this.playerRowsEl.innerHTML = "";
     this.rowCount = 0;
+  }
+
+  private mode(): "live" | "batch" {
+    const checked = this.formEl.querySelector<HTMLInputElement>('input[name="run_mode"]:checked');
+    return checked?.value === "batch" ? "batch" : "live";
+  }
+
+  private updateModeFields(): void {
+    const batch = this.mode() === "batch";
+    this.seedField.hidden = batch;
+    this.gameCountField.hidden = !batch;
+    this.startButton.textContent = batch ? "Run batch" : "Start";
   }
 
   private addPlayerRow(): void {

@@ -24,7 +24,7 @@ pub use board::Board;
 pub use cards::{CardEffect, DeckKind};
 pub use config::{GameConfig, PlayerConfig};
 pub use events::{Event, EventEnvelope};
-pub use game::{ConfigError, Game, GameResult};
+pub use game::{ConfigError, Game, GameResult, SAFETY_MAX_TURNS};
 pub use rules::{IncomeTaxMode, RuleSet};
 pub use run_record::{
     build_batch_run_record, build_single_run_record, derive_batch_seeds, BatchRunRecord,

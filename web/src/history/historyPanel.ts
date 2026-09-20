@@ -10,7 +10,7 @@ import { listRecent, pushRecent, removeRecent, summaryOf } from "./recentRunsCac
 import type { PlayerConfig, RunDetail, RunSummary, RuleSet } from "../types";
 
 export interface HistoryPanelHandlers {
-  onReplay: (ruleSet: RuleSet, players: PlayerConfig[], seed: number, playerNames: string[]) => void;
+  onReplay: (ruleSet: RuleSet, players: PlayerConfig[], seed: bigint, playerNames: string[]) => void;
 }
 
 function resultFor(run: RunSummary): string {

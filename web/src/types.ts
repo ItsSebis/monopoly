@@ -182,8 +182,11 @@ export interface AggregateStats {
   final_net_worth_by_strategy: Record<string, DistributionSummary>;
 }
 
+/** `seed` is a `bigint`, not `number`: it's a full-range u64 that routinely
+ * exceeds `Number.MAX_SAFE_INTEGER` - see bigJson.ts, which api.ts uses to
+ * parse/stringify these shapes without losing precision on it. */
 export interface BatchGameSummary {
-  seed: number;
+  seed: bigint;
   winner: number | null;
   turns: number;
 }
@@ -196,7 +199,7 @@ export interface BatchGameSummary {
 export interface SingleRunRecord {
   rule_set: RuleSet;
   players: PlayerConfig[];
-  seed: number;
+  seed: bigint;
   events: EventEnvelope[];
   final_stats: PerGameStats;
 }
@@ -204,7 +207,7 @@ export interface SingleRunRecord {
 export interface BatchRunRecord {
   rule_set: RuleSet;
   players: PlayerConfig[];
-  seeds: number[];
+  seeds: bigint[];
   per_game_summary: BatchGameSummary[];
   aggregate_stats: AggregateStats;
 }

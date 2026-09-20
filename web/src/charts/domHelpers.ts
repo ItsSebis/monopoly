@@ -43,7 +43,7 @@ export function canvasIn(parent: HTMLElement): HTMLCanvasElement {
   return canvas;
 }
 
-export type TableCell = string | number | HTMLElement;
+export type TableCell = string | number | bigint | HTMLElement;
 
 /** Wraps one or more buttons for use as a `renderTable` action-column cell -
  * a plain `HTMLElement` cell is appended as-is, so this is just a container

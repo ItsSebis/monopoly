@@ -24,7 +24,7 @@ describe("request error handling", () => {
   it("resolves with the parsed body on success", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: "run_1" }) }),
+      vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '{"id":"run_1"}' }),
     );
     await expect(getRun("run_1")).resolves.toEqual({ id: "run_1" });
   });
@@ -32,13 +32,15 @@ describe("request error handling", () => {
   it("throws the server's error message on a non-2xx response", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: false, status: 404, json: async () => ({ error: "no run with id run_1" }) }),
+      vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 404, text: async () => '{"error":"no run with id run_1"}' }),
     );
     await expect(getRun("run_1")).rejects.toThrow("no run with id run_1");
   });
 
   it("resolves undefined for a 204 (delete)", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 204 }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 204, text: async () => "" }));
     await expect(deleteRun("run_1")).resolves.toBeUndefined();
   });
 });

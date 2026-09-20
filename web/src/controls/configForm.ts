@@ -4,9 +4,12 @@
 // UI-specific intermediate format.
 import type { GameConfig, IncomeTaxMode, PlayerConfig, RuleSet } from "../types";
 
+/** `seed` is a `bigint`, matching every other seed in the app (see
+ * types.ts's `SingleRunRecord.seed`) so `startReplay()` has one seed type
+ * regardless of whether a game is freshly started or replayed. */
 export interface StartPayload {
   config: GameConfig;
-  seed: number;
+  seed: bigint;
 }
 
 export interface BatchPayload {
@@ -187,7 +190,7 @@ export class ConfigForm {
     }
 
     const seedInput = data.get("seed");
-    const seed = seedInput ? Number(seedInput) : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    const seed = seedInput ? BigInt(seedInput as string) : BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
     this.handlers.onStart({ config: { rules, players }, seed });
   }
 }

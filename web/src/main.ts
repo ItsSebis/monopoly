@@ -1,5 +1,6 @@
 import "./style.css";
 import * as api from "./api";
+import { parsePreservingSeeds } from "./bigJson";
 import { BoardView } from "./board/board";
 import { renderSingleRunCharts } from "./charts/singleRunCharts";
 import { renderBatchResults } from "./controls/batchResults";
@@ -51,7 +52,7 @@ let playback: PlaybackController | null = null;
 let playerNames: string[] = [];
 let pendingGameOver: { winner: number | null; turns: number } | null = null;
 let currentConfig: GameConfig | null = null;
-let currentSeed: number | null = null;
+let currentSeed: bigint | null = null;
 let pendingRecordRequest: { resolve: (r: SingleRunRecord) => void; reject: (e: Error) => void } | null = null;
 
 function newWorker(): Worker {
@@ -88,7 +89,9 @@ function handleWorkerMessage(message: WorkerResponse): void {
       maybeShowGameOver();
       break;
     case "record":
-      pendingRecordRequest?.resolve(JSON.parse(message.recordJson) as SingleRunRecord);
+      // Not plain `JSON.parse`: the record's `seed` is a u64 that routinely
+      // exceeds `Number.MAX_SAFE_INTEGER` (see bigJson.ts).
+      pendingRecordRequest?.resolve(parsePreservingSeeds(message.recordJson) as SingleRunRecord);
       pendingRecordRequest = null;
       break;
     case "error":
@@ -116,7 +119,7 @@ function handleWorkerMessage(message: WorkerResponse): void {
  * promise (and its button) hung forever. See also `newGameButton`'s click
  * handler, which rejects any request still pending when the worker itself
  * is torn down. */
-function requestRecord(config: GameConfig, seed: number): Promise<SingleRunRecord> {
+function requestRecord(config: GameConfig, seed: bigint): Promise<SingleRunRecord> {
   pendingRecordRequest?.reject(new Error("Superseded by a newer request."));
   return new Promise((resolve, reject) => {
     pendingRecordRequest = { resolve, reject };
@@ -129,7 +132,7 @@ function requestRecord(config: GameConfig, seed: number): Promise<SingleRunRecor
  * a saved history run. Every caller already has `(config, seed)`; the game
  * itself is fully determined by it, so there is exactly one playback path
  * (docs/frontend.md's replay-pipeline-reuse decision). */
-function startReplay(config: GameConfig, seed: number, names: string[]): void {
+function startReplay(config: GameConfig, seed: bigint, names: string[]): void {
   playerNames = names;
   currentConfig = config;
   currentSeed = seed;

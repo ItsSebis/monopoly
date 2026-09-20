@@ -2,6 +2,7 @@
 // optional infrastructure (docs/frontend.md) - every function here can
 // reject (network error, non-2xx), and callers decide how to degrade
 // (e.g. the history panel falls back to the localStorage cache).
+import { parsePreservingSeeds, stringifyPreservingSeeds } from "./bigJson";
 import type { BatchRunRecord, PlayerConfig, RunDetail, RunSummary, RuleSet, SingleRunRecord } from "./types";
 
 const SERVER_URL_KEY = "monopoly:serverUrl";
@@ -29,16 +30,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
     ...init,
   });
+  const text = await response.text();
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(body?.error ?? `request to ${path} failed with ${response.status}`);
+    const body = text ? parsePreservingSeeds(text) : null;
+    const message = (body as { error?: string } | null)?.error;
+    throw new Error(message ?? `request to ${path} failed with ${response.status}`);
   }
-  if (response.status === 204) return undefined as T;
-  return response.json();
+  if (response.status === 204 || !text) return undefined as T;
+  return parsePreservingSeeds(text) as T;
 }
 
 export function postRun(record: SingleRunRecord | BatchRunRecord): Promise<RunDetail> {
-  return request("/runs", { method: "POST", body: JSON.stringify(record) });
+  return request("/runs", { method: "POST", body: stringifyPreservingSeeds(record) });
 }
 
 export function postRunsBatch(ruleSet: RuleSet, players: PlayerConfig[], gameCount: number): Promise<RunDetail> {
@@ -60,7 +63,7 @@ export function getRun(id: string): Promise<RunDetail> {
   return request(`/runs/${encodeURIComponent(id)}`);
 }
 
-export function getRunGames(id: string, seed: number): Promise<SingleRunRecord> {
+export function getRunGames(id: string, seed: bigint): Promise<SingleRunRecord> {
   return request(`/runs/${encodeURIComponent(id)}/games/${seed}`);
 }
 

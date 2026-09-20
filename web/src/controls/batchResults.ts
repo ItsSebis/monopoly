@@ -10,7 +10,7 @@ export function renderBatchResults(
   container: HTMLElement,
   record: BatchRunRecord,
   playerNames: string[],
-  onReplay: (seed: number) => void,
+  onReplay: (seed: bigint) => void,
 ): void {
   container.innerHTML = "";
 

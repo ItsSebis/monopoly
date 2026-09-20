@@ -16,8 +16,12 @@ use crate::strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, St
 
 /// Fallback cap against a non-terminating game when `RuleSet.max_turns` isn't
 /// set — e.g. every player running Buy None can in principle run for a very
-/// long time (see docs/player-strategies.md).
-const SAFETY_MAX_TURNS: u32 = 20_000;
+/// long time (see docs/player-strategies.md). Public so callers driving the
+/// game turn-by-turn via `step_turn` (Phase 5's browser live playback) can
+/// enforce the same cap `run_to_completion` applies internally — `step_turn`
+/// itself deliberately doesn't know about turn caps, since capping which
+/// turn to stop *at* is a caller policy, not a per-turn rule.
+pub const SAFETY_MAX_TURNS: u32 = 20_000;
 
 pub struct Game {
     board: Board,
@@ -172,6 +176,14 @@ impl Game {
     /// turn produced. See docs/simulation-engine.md's turn state machine.
     /// `run_to_completion` drives this in a loop; later phases (e.g. the
     /// browser's live playback in Phase 5) can call it one turn at a time.
+    ///
+    /// Deliberately enforces no turn cap of its own — `RuleSet.max_turns`
+    /// (or the `SAFETY_MAX_TURNS` fallback) is `run_to_completion`'s own loop
+    /// condition, not a rule this method checks, since "which turn to stop
+    /// calling this at" is the caller's policy. A caller driving the game
+    /// turn-by-turn (Phase 5/6's browser live playback) must check `state().turn`
+    /// against the same cap itself, or the game runs unbounded regardless of
+    /// `RuleSet.max_turns` — see `SAFETY_MAX_TURNS`'s doc comment.
     pub fn step_turn(&mut self) -> &[EventEnvelope] {
         let start = self.log.len();
         self.state.turn += 1;

@@ -69,13 +69,16 @@ pub fn build_single_run_record(
 
 /// Runs a full batch and packages it as a `BatchRunRecord`. A thin wrapper
 /// over `run_batch` — used by both the CLI's `batch` command and the
-/// server's `POST /runs/batch`.
+/// server's `POST /runs/batch`. `on_game_done` is forwarded to `run_batch`
+/// unchanged (see its own doc comment) — `None` for the server, `Some` for
+/// the CLI's progress bar.
 pub fn build_batch_run_record(
     rules: RuleSet,
     players: Vec<PlayerConfig>,
     seeds: Vec<u64>,
+    on_game_done: Option<&(dyn Fn() + Sync)>,
 ) -> Result<BatchRunRecord, ConfigError> {
-    let result = run_batch(rules.clone(), players.clone(), &seeds)?;
+    let result = run_batch(rules.clone(), players.clone(), &seeds, on_game_done)?;
     Ok(BatchRunRecord {
         rule_set: rules,
         players,
@@ -144,6 +147,7 @@ mod tests {
             RuleSet::default(),
             players(&["buy_good", "buy_bad"]),
             seeds.clone(),
+            None,
         )
         .unwrap();
         assert_eq!(record.seeds, seeds);

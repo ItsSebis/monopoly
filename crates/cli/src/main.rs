@@ -1,13 +1,30 @@
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
 use monopoly_engine::{
     build_batch_run_record, compute_stats, derive_batch_seeds, BatchRunRecord, Board, Game,
     GameConfig, GameResult, PerGameStats, PlayerConfig, SingleRunRecord,
 };
 use serde::Serialize;
+
+/// A live per-game progress bar to stderr when it's a real terminal; a
+/// no-op, non-drawing bar otherwise (piped/redirected output, or CI) so
+/// `--out`/`--csv` usage and scripted invocations stay clean.
+fn progress_bar(games: usize) -> ProgressBar {
+    if !std::io::stderr().is_terminal() {
+        return ProgressBar::hidden();
+    }
+    let bar = ProgressBar::new(games as u64);
+    bar.set_style(
+        ProgressStyle::with_template("{bar:40} {pos}/{len} games ({eta} left)")
+            .expect("valid progress bar template"),
+    );
+    bar
+}
 
 #[derive(Parser)]
 #[command(name = "monopoly", about = "Headless Monopoly simulator")]
@@ -163,7 +180,10 @@ fn batch(
     let base_seed = seed.unwrap_or_else(rand::random);
     let seeds = derive_batch_seeds(base_seed, games);
 
-    let record = match build_batch_run_record(config.rules, config.players, seeds) {
+    let bar = progress_bar(games);
+    let record = build_batch_run_record(config.rules, config.players, seeds, Some(&|| bar.inc(1)));
+    bar.finish_and_clear();
+    let record = match record {
         Ok(r) => r,
         Err(e) => return fail(&e.to_string()),
     };

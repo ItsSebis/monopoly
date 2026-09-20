@@ -118,7 +118,7 @@ async fn create_batch_run(
     let record = tokio::task::spawn_blocking(move || -> Result<Value, AppError> {
         let base_seed: u64 = rand::random();
         let seeds = derive_batch_seeds(base_seed, req.game_count);
-        let record = build_batch_run_record(req.rule_set, req.players, seeds)?;
+        let record = build_batch_run_record(req.rule_set, req.players, seeds, None)?;
         Ok(serde_json::to_value(record)?)
     })
     .await

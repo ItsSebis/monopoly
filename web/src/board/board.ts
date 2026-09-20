@@ -85,12 +85,32 @@ export class BoardView {
     }
   }
 
+  /** Re-parents the token into its new space and animates the move with a
+   * FLIP transform (capture the old position, move, then transition back
+   * from an inverse transform to identity) rather than an instant snap -
+   * plain CSS transitions don't tween a DOM reparent by themselves, since
+   * the browser never treats the old and new parents as one continuous
+   * layout. Degrades gracefully to today's instant snap at very high
+   * playback speeds, where a later call simply overwrites an
+   * already-in-flight transition before a frame paints. */
   private moveToken(player: number, space: number): void {
     const token = document.querySelector<HTMLElement>(`.token[data-player="${player}"]`);
     // Not found before the first `renderState()` creates the tokens - the
     // next full sync will place it correctly, so there's nothing to do here.
     if (!token) return;
+
+    const from = token.getBoundingClientRect();
     this.tokenContainers[space].appendChild(token);
+    const to = token.getBoundingClientRect();
+    const dx = from.left - to.left;
+    const dy = from.top - to.top;
+    if (dx === 0 && dy === 0) return;
+
+    token.style.transition = "none";
+    token.style.transform = `translate(${dx}px, ${dy}px)`;
+    token.getBoundingClientRect(); // forces a reflow so the line above takes effect before the next one
+    token.style.transition = "transform 250ms ease-out";
+    token.style.transform = "";
   }
 }
 

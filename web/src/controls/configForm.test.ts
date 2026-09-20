@@ -52,6 +52,9 @@ describe("buildRuleSet", () => {
       even_build_rule: true,
       auction_on_decline: true,
       free_parking_pot: false, // checkbox omitted from FormData when unchecked
+      double_go_salary: false,
+      unlimited_houses: false,
+      trading_enabled: false,
       max_turns: 1000,
     });
   });

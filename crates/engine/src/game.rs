@@ -257,7 +257,12 @@ impl Game {
         // from misreading as "wrapped past GO". No current card can land a
         // player where they already stand, but nothing here relies on that.
         if spaces > 0 && new <= old {
-            self.pay_from_bank(player, self.rules.go_salary);
+            let salary = if new == 0 && self.rules.double_go_salary {
+                self.rules.go_salary * 2
+            } else {
+                self.rules.go_salary
+            };
+            self.pay_from_bank(player, salary);
             self.record(player, Event::PassGo);
         }
     }
@@ -656,8 +661,10 @@ impl Game {
             return false;
         }
         let current = self.state.properties[space].houses;
-        let hotel_supply_ok = current < 4 || self.state.bank_hotels_remaining > 0;
-        let house_supply_ok = current == 4 || self.state.bank_houses_remaining > 0;
+        let hotel_supply_ok =
+            self.rules.unlimited_houses || current < 4 || self.state.bank_hotels_remaining > 0;
+        let house_supply_ok =
+            self.rules.unlimited_houses || current == 4 || self.state.bank_houses_remaining > 0;
         if !hotel_supply_ok
             || !house_supply_ok
             || self.state.players[player].cash < house_cost as i64
@@ -666,11 +673,19 @@ impl Game {
         }
         self.state.players[player].cash -= house_cost as i64;
         if current == 4 {
-            self.state.bank_hotels_remaining -= 1;
-            self.state.bank_houses_remaining += 4; // the 4 houses return to the bank's supply
+            // Bank bookkeeping is skipped under `unlimited_houses`: the
+            // counters are `u8` and building past the real 32/12 stock would
+            // otherwise underflow/overflow them, so they're simply left
+            // frozen (decorative, not enforced) while the rule is on.
+            if !self.rules.unlimited_houses {
+                self.state.bank_hotels_remaining -= 1;
+                self.state.bank_houses_remaining += 4; // the 4 houses return to the bank's supply
+            }
             self.state.properties[space].houses = 5;
         } else {
-            self.state.bank_houses_remaining -= 1;
+            if !self.rules.unlimited_houses {
+                self.state.bank_houses_remaining -= 1;
+            }
             self.state.properties[space].houses += 1;
         }
         self.record(player, Event::HouseBuilt { space });
@@ -699,16 +714,22 @@ impl Game {
             return false;
         }
         let current = self.state.properties[space].houses;
-        if current == 5 && self.state.bank_houses_remaining < 4 {
+        if current == 5 && !self.rules.unlimited_houses && self.state.bank_houses_remaining < 4 {
             return false;
         }
         self.state.players[player].cash += (house_cost / 2) as i64;
         if current == 5 {
-            self.state.bank_hotels_remaining += 1;
-            self.state.bank_houses_remaining -= 4;
+            // Bank bookkeeping stays frozen under `unlimited_houses`, matching
+            // `try_build` above.
+            if !self.rules.unlimited_houses {
+                self.state.bank_hotels_remaining += 1;
+                self.state.bank_houses_remaining -= 4;
+            }
             self.state.properties[space].houses = 4;
         } else {
-            self.state.bank_houses_remaining += 1;
+            if !self.rules.unlimited_houses {
+                self.state.bank_houses_remaining += 1;
+            }
             self.state.properties[space].houses -= 1;
         }
         self.record(player, Event::HouseSold { space });
@@ -1328,5 +1349,95 @@ mod tests {
         game.run_auction(1);
 
         assert_eq!(game.state.properties[1].owner, Some(0));
+    }
+
+    fn rules_with(mutate: impl FnOnce(&mut RuleSet)) -> RuleSet {
+        let mut rules = RuleSet::default();
+        mutate(&mut rules);
+        rules
+    }
+
+    #[test]
+    fn double_go_salary_only_applies_when_landing_exactly_on_go() {
+        let rules = rules_with(|r| r.double_go_salary = true);
+        let mut game = Game::new(rules, &two_players(), 0).unwrap();
+        game.state.players[0].position = 35;
+        let before = game.state.players[0].cash;
+
+        game.move_player(0, 5); // 35 -> 0, lands exactly on GO
+
+        assert_eq!(
+            game.state.players[0].cash,
+            before + (game.rules.go_salary * 2) as i64,
+            "landing exactly on GO pays double when the rule is on"
+        );
+    }
+
+    #[test]
+    fn double_go_salary_does_not_apply_to_merely_passing_go() {
+        let rules = rules_with(|r| r.double_go_salary = true);
+        let mut game = Game::new(rules, &two_players(), 0).unwrap();
+        game.state.players[0].position = 35;
+        let before = game.state.players[0].cash;
+
+        game.move_player(0, 10); // 35 -> 5, passes GO but doesn't land on it
+
+        assert_eq!(
+            game.state.players[0].cash,
+            before + game.rules.go_salary as i64,
+            "merely passing GO still pays the normal salary, not double"
+        );
+    }
+
+    #[test]
+    fn double_go_salary_off_pays_the_normal_salary_even_landing_exactly_on_go() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        game.state.players[0].position = 35;
+        let before = game.state.players[0].cash;
+
+        game.move_player(0, 5);
+
+        assert_eq!(
+            before + game.rules.go_salary as i64,
+            game.state.players[0].cash
+        );
+    }
+
+    #[test]
+    fn unlimited_houses_allows_building_past_the_normal_bank_supply() {
+        let rules = rules_with(|r| r.unlimited_houses = true);
+        let mut game = Game::new(rules, &two_players(), 0).unwrap();
+        // Give player 0 the Brown monopoly (Mediterranean + Baltic) and drain
+        // the bank's house supply to 0, as if every other property had
+        // already been built up to the normal 32-house cap.
+        game.state.properties[1].owner = Some(0);
+        game.state.properties[3].owner = Some(0);
+        game.state.bank_houses_remaining = 0;
+        game.state.bank_hotels_remaining = 0;
+        game.state.players[0].cash = 10_000;
+
+        assert!(
+            game.try_build(0, 1),
+            "unlimited_houses should allow building with no bank supply left"
+        );
+        assert_eq!(game.state.properties[1].houses, 1);
+        assert_eq!(
+            game.state.bank_houses_remaining, 0,
+            "the bank's supply counter stays frozen (decorative) under unlimited_houses"
+        );
+    }
+
+    #[test]
+    fn unlimited_houses_off_is_blocked_by_an_empty_bank_supply() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        game.state.properties[1].owner = Some(0);
+        game.state.properties[3].owner = Some(0);
+        game.state.bank_houses_remaining = 0;
+        game.state.players[0].cash = 10_000;
+
+        assert!(
+            !game.try_build(0, 1),
+            "with the rule off, an empty bank supply should still block building"
+        );
     }
 }

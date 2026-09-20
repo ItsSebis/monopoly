@@ -36,6 +36,20 @@ fn players_config() -> impl Strategy<Value = Vec<PlayerConfig>> {
 /// event-logged (see `monopoly_engine::stats`'s module doc comment), so
 /// reconciling it here would mean mirroring internal bookkeeping rather than
 /// replaying events — out of scope for this event-log-only check.
+/// `double_go_salary` is left off for the same reason: `reconcile_final_cash`
+/// below credits every `PassGo` at the flat `rules.go_salary`, and telling a
+/// doubled landing-on-GO payment apart from a normal pass-through would mean
+/// cross-referencing the preceding `Move` event rather than just replaying
+/// `PassGo` in isolation — covered by a dedicated `game.rs` unit test
+/// instead. `trading_enabled` is left off too: a trade's property/cash swap
+/// is a different shape of event than this reconciler's additive
+/// credits/debits, and is likewise covered by dedicated `game.rs` unit tests.
+/// `unlimited_houses` is left off as well: `bank_house_and_hotel_supply_
+/// always_balances` below asserts the bank's fixed 32/12 supply is always
+/// exactly conserved, which `unlimited_houses` deliberately breaks by design
+/// (see `game.rs`'s `try_build`) — fuzzing it here would fight the very
+/// invariant that test checks, rather than test it; covered instead by
+/// dedicated `game.rs` unit tests.
 fn rule_set() -> impl Strategy<Value = RuleSet> {
     (
         500u32..3000,
@@ -71,6 +85,9 @@ fn rule_set() -> impl Strategy<Value = RuleSet> {
                     auction_on_decline,
                     free_parking_pot: false,
                     max_turns: Some(300),
+                    double_go_salary: false,
+                    unlimited_houses: false,
+                    trading_enabled: false,
                 }
             },
         )

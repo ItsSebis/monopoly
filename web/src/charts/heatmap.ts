@@ -4,11 +4,17 @@
 // (docs/frontend.md's Phase 6 scoping decision).
 import { BOARD_LAYOUT } from "../board/layout";
 
-/** A single-hue intensity scale, `value` relative to `max` (0 when `max` is
- * 0, so an all-zero series renders as the scale's lightest color rather than
- * dividing by zero). Pure so the color mapping is unit-testable. */
-export function colorFor(value: number, max: number): string {
-  const ratio = max > 0 ? Math.min(1, value / max) : 0;
+/** A single-hue intensity scale, `value` relative to the `[min, max]` range
+ * (0 when the range is empty, so an all-equal series renders as the scale's
+ * lightest color rather than dividing by zero). `min` defaults to 0, so
+ * every existing absolute-scale caller (e.g. a 0-100 win rate) is
+ * unaffected; a caller with a narrow-range series (e.g. landing counts that
+ * never approach 0) passes the series' own minimum so the visible range
+ * actually stretches across the full scale instead of clustering in one
+ * shade. Pure so the color mapping is unit-testable. */
+export function colorFor(value: number, max: number, min: number = 0): string {
+  const span = max - min;
+  const ratio = span > 0 ? Math.min(1, Math.max(0, (value - min) / span)) : 0;
   const lightness = 92 - ratio * 57; // 92% (near-white) down to 35% (saturated)
   return `hsl(210, 80%, ${lightness}%)`;
 }
@@ -23,13 +29,14 @@ export function renderBoardHeatmap(container: HTMLElement, values: number[]): vo
   const grid = document.createElement("div");
   grid.className = "board-grid";
   const max = Math.max(0, ...values);
+  const min = values.length > 0 ? Math.min(...values) : 0;
   for (const space of BOARD_LAYOUT) {
     const value = values[space.index] ?? 0;
     const cell = document.createElement("div");
     cell.className = "heatmap-space";
     cell.style.gridRow = String(space.row + 1);
     cell.style.gridColumn = String(space.col + 1);
-    cell.style.background = colorFor(value, max);
+    cell.style.background = colorFor(value, max, min);
     cell.title = `${space.name}: ${value}`;
     cell.textContent = String(value);
     grid.appendChild(cell);

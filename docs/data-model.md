@@ -16,7 +16,10 @@ The full configuration of "which Monopoly are we playing" — everything in [gam
   "even_build_rule": true,
   "auction_on_decline": true,
   "free_parking_pot": false,
-  "max_turns": null                  // optional cap, mainly for batch runs to bound worst-case game length
+  "max_turns": null,                 // optional cap, mainly for batch runs to bound worst-case game length
+  "double_go_salary": false,         // house rule: landing exactly on GO pays double
+  "unlimited_houses": false,         // house rule: ignore the bank's 32-house/12-hotel supply
+  "trading_enabled": false           // Phase 7: player-initiated trading (Strategy::decide_trade)
 }
 ```
 

@@ -42,6 +42,21 @@ pub struct RuleSet {
     /// falls back to the engine's internal safety valve.
     #[serde(default)]
     pub max_turns: Option<u32>,
+    /// A common house rule: landing exactly on GO pays double the normal
+    /// salary. Off matches official rules (a flat salary for landing on or
+    /// passing GO alike).
+    #[serde(default)]
+    pub double_go_salary: bool,
+    /// A common house rule: ignore the bank's fixed 32-house/12-hotel supply
+    /// when building. Off matches official rules.
+    #[serde(default)]
+    pub unlimited_houses: bool,
+    /// Player-initiated trading (`Strategy::decide_trade`/`decide_trade_response`,
+    /// `docs/roadmap.md` Phase 7). Off by default, matching every other
+    /// optional rule here — turning it on with the same strategy code
+    /// otherwise unchanged is the intended before/after comparison.
+    #[serde(default)]
+    pub trading_enabled: bool,
 }
 
 impl Default for RuleSet {
@@ -56,6 +71,9 @@ impl Default for RuleSet {
             auction_on_decline: true,
             free_parking_pot: false,
             max_turns: None,
+            double_go_salary: false,
+            unlimited_houses: false,
+            trading_enabled: false,
         }
     }
 }

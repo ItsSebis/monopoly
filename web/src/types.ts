@@ -19,6 +19,9 @@ export interface RuleSet {
   auction_on_decline: boolean;
   free_parking_pot: boolean;
   max_turns: number | null;
+  double_go_salary: boolean;
+  unlimited_houses: boolean;
+  trading_enabled: boolean;
 }
 
 export interface PlayerConfig {

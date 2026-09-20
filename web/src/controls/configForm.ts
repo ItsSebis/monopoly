@@ -44,6 +44,9 @@ export function buildRuleSet(data: FormData): RuleSet {
     even_build_rule: data.get("even_build_rule") === "on",
     auction_on_decline: data.get("auction_on_decline") === "on",
     free_parking_pot: data.get("free_parking_pot") === "on",
+    double_go_salary: data.get("double_go_salary") === "on",
+    unlimited_houses: data.get("unlimited_houses") === "on",
+    trading_enabled: data.get("trading_enabled") === "on",
     max_turns: data.get("max_turns") ? Number(data.get("max_turns")) : null,
   };
 }

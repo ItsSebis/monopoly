@@ -9,71 +9,107 @@
   <body>
     <h1>Monopoly</h1>
 
-    <section id="config-panel">
-      <h2>New game</h2>
-      <form id="config-form">
-        <fieldset>
-          <legend>Rules</legend>
-          <label>Starting cash <input type="number" name="starting_cash" value="1500" min="0" required /></label>
-          <label>GO salary <input type="number" name="go_salary" value="200" min="0" required /></label>
-          <label>Jail fine <input type="number" name="jail_fine" value="50" min="0" required /></label>
-          <label>Luxury tax <input type="number" name="luxury_tax" value="75" min="0" required /></label>
+    <div id="server-settings">
+      <label>Archive server <input type="text" id="server-url-input" /></label>
+      <span id="server-url-note"></span>
+    </div>
+
+    <nav id="mode-nav">
+      <button type="button" id="nav-play" aria-current="true">Play</button>
+      <button type="button" id="nav-history">History</button>
+    </nav>
+
+    <section id="play-view">
+      <section id="config-panel">
+        <h2>New game</h2>
+        <form id="config-form">
+          <fieldset>
+            <legend>Mode</legend>
+            <label><input type="radio" name="run_mode" value="live" checked /> Live (watch it play out)</label>
+            <label><input type="radio" name="run_mode" value="batch" /> Batch (run many games on the server)</label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Rules</legend>
+            <label>Starting cash <input type="number" name="starting_cash" value="1500" min="0" required /></label>
+            <label>GO salary <input type="number" name="go_salary" value="200" min="0" required /></label>
+            <label>Jail fine <input type="number" name="jail_fine" value="50" min="0" required /></label>
+            <label>Luxury tax <input type="number" name="luxury_tax" value="75" min="0" required /></label>
+            <label>
+              Income tax mode
+              <select name="income_tax_mode">
+                <option value="choice" selected>Choice (cheaper of flat/10%)</option>
+                <option value="flat">Flat</option>
+                <option value="percentage">Percentage</option>
+              </select>
+            </label>
+            <label>Flat/choice tax amount <input type="number" name="income_tax_flat_amount" value="200" min="0" /></label>
+            <label>Percentage tax rate (e.g. 0.1 = 10%) <input type="number" name="income_tax_rate" value="0.1" min="0" max="1" step="0.01" /></label>
+            <label><input type="checkbox" name="even_build_rule" checked /> Even build rule</label>
+            <label><input type="checkbox" name="auction_on_decline" checked /> Auction on decline</label>
+            <label><input type="checkbox" name="free_parking_pot" /> Free parking pot</label>
+            <label>Max turns (optional) <input type="number" name="max_turns" min="1" placeholder="unbounded" /></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Players</legend>
+            <div id="player-rows"></div>
+            <button type="button" id="add-player" disabled>Add player</button>
+          </fieldset>
+
+          <label id="seed-field">Seed (optional) <input type="number" name="seed" placeholder="random" /></label>
+          <label id="game-count-field" hidden>Games <input type="number" name="game_count" value="1000" min="1" /></label>
+
+          <button type="submit" id="start-button" disabled>Start</button>
+          <span id="loading-note">loading engine…</span>
+          <p id="config-error" role="alert"></p>
+        </form>
+      </section>
+
+      <section id="game-panel" hidden>
+        <div id="playback-controls">
+          <button type="button" id="play-pause-button">Pause</button>
+          <button type="button" id="step-button">Step</button>
           <label>
-            Income tax mode
-            <select name="income_tax_mode">
-              <option value="choice" selected>Choice (cheaper of flat/10%)</option>
-              <option value="flat">Flat</option>
-              <option value="percentage">Percentage</option>
+            Speed
+            <select id="speed-select">
+              <option value="1">1x</option>
+              <option value="4" selected>4x</option>
+              <option value="32">32x</option>
+              <option value="0">Instant</option>
             </select>
           </label>
-          <label>Flat/choice tax amount <input type="number" name="income_tax_flat_amount" value="200" min="0" /></label>
-          <label>Percentage tax rate (e.g. 0.1 = 10%) <input type="number" name="income_tax_rate" value="0.1" min="0" max="1" step="0.01" /></label>
-          <label><input type="checkbox" name="even_build_rule" checked /> Even build rule</label>
-          <label><input type="checkbox" name="auction_on_decline" checked /> Auction on decline</label>
-          <label><input type="checkbox" name="free_parking_pot" /> Free parking pot</label>
-          <label>Max turns (optional) <input type="number" name="max_turns" min="1" placeholder="unbounded" /></label>
-        </fieldset>
+          <span id="turn-indicator"></span>
+          <button type="button" id="new-game-button">New game</button>
+        </div>
 
-        <fieldset>
-          <legend>Players</legend>
-          <div id="player-rows"></div>
-          <button type="button" id="add-player" disabled>Add player</button>
-        </fieldset>
+        <div id="game-layout">
+          <div id="board"></div>
+          <div id="side-panel">
+            <div id="player-panel"></div>
+            <div id="event-log" aria-live="polite"></div>
+          </div>
+        </div>
 
-        <label>Seed (optional) <input type="number" name="seed" placeholder="random" /></label>
+        <p id="game-over-banner" hidden></p>
+        <div id="game-over-actions" hidden>
+          <button type="button" id="view-stats-button">View stats</button>
+          <button type="button" id="save-run-button">Save run</button>
+          <span id="save-run-note"></span>
+        </div>
+        <div id="game-stats"></div>
+      </section>
 
-        <button type="submit" id="start-button" disabled>Start</button>
-        <span id="loading-note">loading engine…</span>
-        <p id="config-error" role="alert"></p>
-      </form>
+      <section id="batch-results-panel" hidden>
+        <button type="button" id="batch-new-button">New run</button>
+        <div id="batch-results"></div>
+      </section>
     </section>
 
-    <section id="game-panel" hidden>
-      <div id="playback-controls">
-        <button type="button" id="play-pause-button">Pause</button>
-        <button type="button" id="step-button">Step</button>
-        <label>
-          Speed
-          <select id="speed-select">
-            <option value="1">1x</option>
-            <option value="4" selected>4x</option>
-            <option value="32">32x</option>
-            <option value="0">Instant</option>
-          </select>
-        </label>
-        <span id="turn-indicator"></span>
-        <button type="button" id="new-game-button">New game</button>
-      </div>
-
-      <div id="game-layout">
-        <div id="board"></div>
-        <div id="side-panel">
-          <div id="player-panel"></div>
-          <div id="event-log" aria-live="polite"></div>
-        </div>
-      </div>
-
-      <p id="game-over-banner" hidden></p>
+    <section id="history-panel" hidden>
+      <h2>History</h2>
+      <div id="history-list"></div>
+      <div id="history-detail"></div>
     </section>
 
     <script type="module" src="/src/main.ts"></script>

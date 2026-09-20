@@ -2,10 +2,20 @@
 // "History browser": a convenience for instant display and a fallback when
 // the server can't be reached, never a source of truth (the server always
 // wins when reachable).
-import type { RunSummary } from "../types";
+import type { RunDetail, RunSummary } from "../types";
 
 const CACHE_KEY = "monopoly:recentRuns";
 const MAX_ENTRIES = 20;
+
+/** The lightweight `RunSummary` shape for a full `RunDetail` - used to seed
+ * the cache with what a save/open just fetched, without a second `GET
+ * /runs` round trip. */
+export function summaryOf(detail: RunDetail): RunSummary {
+  const base = { id: detail.id, created_at: detail.created_at, rule_set: detail.rule_set, players: detail.players };
+  return detail.kind === "single"
+    ? { ...base, kind: "single", winner: detail.final_stats.winner }
+    : { ...base, kind: "batch", games: detail.aggregate_stats.games };
+}
 
 export function pushRecent(entry: RunSummary): void {
   try {

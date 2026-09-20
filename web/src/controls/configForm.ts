@@ -9,6 +9,12 @@ export interface StartPayload {
   seed: number;
 }
 
+export interface BatchPayload {
+  ruleSet: RuleSet;
+  players: PlayerConfig[];
+  gameCount: number;
+}
+
 // The next three functions are pure `FormData` -> engine-shape mappings,
 // exported so their tests don't need a DOM.
 
@@ -43,23 +49,65 @@ export function buildPlayers(rows: { name: string; strategy: string }[]): Player
   return rows.map((row) => ({ name: row.name, strategy: row.strategy }));
 }
 
+/** `game_count` is only read in "batch" mode - a plain `Number()` mapping,
+ * kept alongside `buildRuleSet`/`buildPlayers` so it's covered by the same
+ * DOM-free pure-function tests. */
+export function buildGameCount(data: FormData): number {
+  return Number(data.get("game_count"));
+}
+
+export interface ConfigFormHandlers {
+  onStart: (payload: StartPayload) => void;
+  onRunBatch: (payload: BatchPayload) => void;
+}
+
 export class ConfigForm {
   private strategyIds: string[] = [];
   private readonly playerRowsEl: HTMLElement;
   private readonly errorEl: HTMLElement;
+  private readonly startButton: HTMLButtonElement;
+  private readonly seedField: HTMLElement;
+  private readonly gameCountField: HTMLElement;
   private rowCount = 0;
 
   constructor(
     private readonly formEl: HTMLFormElement,
-    private readonly onStart: (payload: StartPayload) => void,
+    private readonly handlers: ConfigFormHandlers,
   ) {
     this.playerRowsEl = formEl.querySelector("#player-rows")!;
     this.errorEl = formEl.querySelector("#config-error")!;
+    this.startButton = formEl.querySelector<HTMLButtonElement>("#start-button")!;
+    this.seedField = formEl.querySelector("#seed-field")!;
+    this.gameCountField = formEl.querySelector("#game-count-field")!;
+
     formEl.querySelector("#add-player")!.addEventListener("click", () => this.addPlayerRow());
+    formEl.querySelectorAll<HTMLInputElement>('input[name="run_mode"]').forEach((radio) => {
+      radio.addEventListener("change", () => this.updateModeFields());
+    });
+    this.updateModeFields();
     formEl.addEventListener("submit", (event) => {
       event.preventDefault();
       this.submit();
     });
+  }
+
+  private mode(): "live" | "batch" {
+    const checked = this.formEl.querySelector<HTMLInputElement>('input[name="run_mode"]:checked');
+    return checked?.value === "batch" ? "batch" : "live";
+  }
+
+  private updateModeFields(): void {
+    const batch = this.mode() === "batch";
+    this.seedField.hidden = batch;
+    this.gameCountField.hidden = !batch;
+    this.startButton.textContent = batch ? "Run batch" : "Start";
+  }
+
+  /** Disables the submit button while a batch request is in flight - a
+   * batch is one synchronous request/response (docs/frontend.md), so this is
+   * the whole of the "progress indicator" for it. */
+  setBusy(busy: boolean): void {
+    this.startButton.disabled = busy;
   }
 
   /** Called once the worker reports the engine's registered strategy ids
@@ -133,9 +181,13 @@ export class ConfigForm {
     const rules = buildRuleSet(data);
     const players = buildPlayers(rows);
 
+    if (this.mode() === "batch") {
+      this.handlers.onRunBatch({ ruleSet: rules, players, gameCount: buildGameCount(data) });
+      return;
+    }
+
     const seedInput = data.get("seed");
     const seed = seedInput ? Number(seedInput) : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
-
-    this.onStart({ config: { rules, players }, seed });
+    this.handlers.onStart({ config: { rules, players }, seed });
   }
 }

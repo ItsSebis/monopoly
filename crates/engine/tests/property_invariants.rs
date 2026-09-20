@@ -16,7 +16,7 @@ use monopoly_engine::{
 };
 use proptest::prelude::*;
 
-const STRATEGY_IDS: [&str; 4] = ["buy_all", "buy_good", "buy_bad", "buy_none"];
+const STRATEGY_IDS: [&str; 5] = ["buy_all", "buy_good", "buy_bad", "buy_none", "buy_shrewd"];
 
 fn player_config() -> impl Strategy<Value = PlayerConfig> {
     proptest::sample::select(&STRATEGY_IDS[..]).prop_map(|s| PlayerConfig {

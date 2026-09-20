@@ -31,7 +31,7 @@ impl Strategy for BuyAll {
     }
 
     fn decide_build(&mut self, view: &GameView, player: usize) -> Vec<BuildAction> {
-        build_within_reserve(view, player, RESERVE)
+        build_within_reserve(view, player, RESERVE, false)
     }
 
     fn decide_mortgage(

@@ -2,11 +2,13 @@ mod buy_all;
 mod buy_bad;
 mod buy_good;
 mod buy_none;
+mod buy_shrewd;
 
 pub use buy_all::BuyAll;
 pub use buy_bad::BuyBad;
 pub use buy_good::BuyGood;
 pub use buy_none::BuyNone;
+pub use buy_shrewd::BuyShrewd;
 
 use crate::board::{ColorGroup, SpaceKind, BOARD_SIZE};
 use crate::building::can_build;
@@ -17,7 +19,7 @@ use crate::strategy::{BuildAction, JailAction, MortgageAction, Strategy, TradeOf
 /// them — the one source of truth for anything that needs to list them (e.g.
 /// the browser's strategy dropdown in Phase 5), instead of a hand-maintained
 /// duplicate.
-pub const STRATEGY_IDS: &[&str] = &["buy_all", "buy_good", "buy_bad", "buy_none"];
+pub const STRATEGY_IDS: &[&str] = &["buy_all", "buy_good", "buy_bad", "buy_none", "buy_shrewd"];
 
 /// Construct a built-in strategy by its registered id (used by config files
 /// and the CLI). `None` for an unrecognized id, so callers can report a
@@ -28,6 +30,7 @@ pub fn make_strategy(id: &str) -> Option<Box<dyn Strategy>> {
         "buy_good" => Some(Box::new(BuyGood)),
         "buy_bad" => Some(Box::new(BuyBad)),
         "buy_none" => Some(Box::new(BuyNone)),
+        "buy_shrewd" => Some(Box::new(BuyShrewd)),
         _ => None,
     }
 }
@@ -55,18 +58,26 @@ fn cash_above_reserve(view: &GameView, player: usize, reserve: i64) -> Option<u3
     (spare > 0).then_some(spare as u32)
 }
 
-/// Building logic shared by Buy All and Buy Good (see
+/// Building logic shared by Buy All, Buy Good, and Buy Shrewd (see
 /// docs/player-strategies.md): build one increment at a time on every fully
 /// owned group, cheapest-eligible-property first, stopping once cash would
-/// drop below `reserve`. Both strategies differ only in their reserve, so
-/// this one loop (rather than near-duplicate code in each file) covers both.
+/// drop below `reserve`. Buy All/Buy Good differ only in their reserve; Buy
+/// Shrewd additionally sets `stop_before_hotel` for house-supply denial
+/// (never converting 4 houses to a hotel, which would otherwise free 4
+/// houses back to the bank's supply) — this one loop (rather than
+/// near-duplicate code in each file) covers all three.
 ///
 /// The plan is simulated locally against `view`'s snapshot — it doesn't
 /// track the bank's house/hotel supply, since the engine already validates
 /// and silently skips any action that supply can't cover (see
 /// `BuildAction`'s doc comment), so a strategy overshooting supply is
 /// harmless, not incorrect.
-fn build_within_reserve(view: &GameView, player: usize, reserve: i64) -> Vec<BuildAction> {
+fn build_within_reserve(
+    view: &GameView,
+    player: usize,
+    reserve: i64,
+    stop_before_hotel: bool,
+) -> Vec<BuildAction> {
     let mut cash = view.player(player).cash;
     let mut houses_by_group: Vec<Vec<u8>> = ColorGroup::ALL
         .iter()
@@ -84,6 +95,9 @@ fn build_within_reserve(view: &GameView, player: usize, reserve: i64) -> Vec<Bui
                 let Some(cost) = view.board.space(space).house_cost() else {
                     continue;
                 };
+                if stop_before_hotel && houses_by_group[group_index][member_index] == 4 {
+                    continue;
+                }
                 let affordable = cash - cost as i64 >= reserve;
                 if affordable
                     && can_build(

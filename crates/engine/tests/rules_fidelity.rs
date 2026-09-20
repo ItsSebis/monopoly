@@ -50,6 +50,23 @@ fn buy_all_vs_buy_none_reliably_terminates_quickly() {
 }
 
 #[test]
+fn buy_shrewd_vs_buy_none_reliably_terminates_quickly() {
+    let config = players(&[("Shrewd", "buy_shrewd"), ("Passive", "buy_none")]);
+    for seed in 0..20u64 {
+        let result = run(&config, seed);
+        assert!(
+            result.winner.is_some(),
+            "seed {seed}: expected a sole survivor well within the safety cap"
+        );
+        assert!(
+            result.turns < 5_000,
+            "seed {seed}: expected this matchup to resolve quickly, took {} turns",
+            result.turns
+        );
+    }
+}
+
+#[test]
 fn the_same_seed_always_produces_the_same_game() {
     let config = players(&[("A", "buy_good"), ("B", "buy_all"), ("C", "buy_bad")]);
     let a = run(&config, 1234);

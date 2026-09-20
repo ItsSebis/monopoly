@@ -50,6 +50,45 @@ fn patient_jail_action(view: &GameView, player: usize) -> JailAction {
     }
 }
 
+/// Minimum rent-to-price score for a street to be worth buying — and the
+/// flat score railroads/utilities are given instead (see
+/// `rent_to_price_score`). Shared by Buy Good and Buy Shrewd.
+const RATIO_THRESHOLD: f64 = 0.06;
+/// Score bonus applied when a purchase would complete a color group.
+const MONOPOLY_BONUS: f64 = 0.15;
+
+/// A rent-to-price heuristic, with a bonus for completing a monopoly.
+/// Shared by purchase decisions and auction bids — see
+/// docs/player-strategies.md. Buy Shrewd multiplies a landing-frequency
+/// weight on top of this rather than scoring differently (see
+/// `buy_shrewd::weighted_score`).
+fn rent_to_price_score(view: &GameView, player: usize, space: usize) -> Option<f64> {
+    match view.board.space(space) {
+        SpaceKind::Street {
+            group,
+            base_rent,
+            price,
+            ..
+        } => {
+            let completes_monopoly = view
+                .board
+                .group_members(group)
+                .all(|s| s == space || view.owner_of(s) == Some(player));
+            let bonus = if completes_monopoly {
+                MONOPOLY_BONUS
+            } else {
+                0.0
+            };
+            Some(base_rent as f64 / price as f64 + bonus)
+        }
+        // Railroads/utilities have no fixed base rent (it scales with how
+        // many the buyer ends up holding), so they're valued as a steady,
+        // moderate investment rather than scored on the street formula.
+        SpaceKind::Railroad { .. } | SpaceKind::Utility { .. } => Some(RATIO_THRESHOLD),
+        _ => None,
+    }
+}
+
 /// How much `player` can commit beyond `reserve` — the ceiling every bidding
 /// strategy caps its auction bid at. `None` when already at or below the
 /// reserve, which is also how a strategy abstains from the auction.
@@ -182,9 +221,9 @@ fn raise_cash_cheapest_first(
 /// that would complete a *different* group of that same counterparty's,
 /// otherwise a cash offer at a 1.5x premium over the missing property/ies'
 /// combined list price. Shared by Buy All and Buy Good (see
-/// docs/player-strategies.md's Trading note) - the one trading heuristic
+/// docs/player-strategies.md's Trading note) — the one trading heuristic
 /// both use, at most one proposal per turn like `decide_build`.
-pub fn propose_monopoly_completing_trade(view: &GameView, player: usize) -> Option<TradeOffer> {
+fn propose_monopoly_completing_trade(view: &GameView, player: usize) -> Option<TradeOffer> {
     for group in ColorGroup::ALL {
         let members: Vec<usize> = view.board.group_members(group).collect();
         if view.owns_full_group(player, group)
@@ -238,7 +277,7 @@ pub fn propose_monopoly_completing_trade(view: &GameView, player: usize) -> Opti
 }
 
 /// A property `player` owns, outside any group they're otherwise
-/// participating in, that would complete a color group for `counterparty` -
+/// participating in, that would complete a color group for `counterparty` —
 /// a "spare" worth giving up in a direct swap rather than for cash.
 /// `target` (the group `player` is trying to complete via this same trade)
 /// is explicitly excluded: `player`'s own member of `target` would otherwise
@@ -266,9 +305,10 @@ fn find_reciprocal_spare(
         if group == target {
             return false;
         }
-        let mut members = view.board.group_members(group);
-        let would_complete_for_counterparty =
-            members.all(|m| m == space || view.owner_of(m) == Some(counterparty));
+        let would_complete_for_counterparty = view
+            .board
+            .group_members(group)
+            .all(|m| m == space || view.owner_of(m) == Some(counterparty));
         let player_owns_others_in_group = view
             .board
             .group_members(group)
@@ -279,13 +319,13 @@ fn find_reciprocal_spare(
 
 /// Whether `player` should accept an incoming `TradeOffer` (they'd receive
 /// `offered_properties`/`offered_cash`, giving up `requested_properties`/
-/// `requested_cash`) - shared by every strategy that can own property, since
+/// `requested_cash`) — shared by every strategy that can own property, since
 /// all of them value a trade the same way: accept if it completes a
 /// monopoly *after* the trade, or if it's a pure cash buyout that exceeds
 /// the requested properties' combined list price.
-pub fn accept_trade(view: &GameView, player: usize, offer: &TradeOffer) -> bool {
+fn accept_trade(view: &GameView, player: usize, offer: &TradeOffer) -> bool {
     // Judged on ownership *after* the swap: an incoming property only counts
-    // if every other member of its group is still (or becomes) `player`'s -
+    // if every other member of its group is still (or becomes) `player`'s —
     // not given away by this same trade's `requested_properties`, which a
     // check against current ownership alone would miss (accepting the exact
     // mirror of a trade that also takes away another piece of the group).
@@ -337,7 +377,7 @@ mod tests {
     /// Regression for a bug where `find_reciprocal_spare` could offer up
     /// `player`'s own member of the group being traded for (it trivially
     /// "completes" the counterparty's group and isn't part of any *other*
-    /// group `player` owns) - proposing the exact mirror of the trade being
+    /// group `player` owns) — proposing the exact mirror of the trade being
     /// made, which two trading strategies would then swap back and forth
     /// forever without ever completing anything.
     #[test]
@@ -345,7 +385,7 @@ mod tests {
         let board = Board::standard();
         let rules = RuleSet::default();
         let mut state = two_player_state(&rules);
-        // Brown: player 0 owns Mediterranean (1), player 1 owns Baltic (3) -
+        // Brown: player 0 owns Mediterranean (1), player 1 owns Baltic (3) —
         // the only "spare" `find_reciprocal_spare` could otherwise find is
         // player 0's own Mediterranean, since it has no other Brown property
         // and giving it up "completes" Brown for player 1.
@@ -399,8 +439,8 @@ mod tests {
         let board = Board::standard();
         let rules = RuleSet::default();
         let mut state = two_player_state(&rules);
-        state.properties[1].owner = Some(0); // Mediterranean - about to be offered to player 0
-        state.properties[3].owner = Some(0); // Baltic - player 0 already owns this
+        state.properties[1].owner = Some(0); // Mediterranean — about to be offered to player 0
+        state.properties[3].owner = Some(0); // Baltic — player 0 already owns this
         let view = GameView {
             board: &board,
             rules: &rules,

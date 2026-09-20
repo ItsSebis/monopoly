@@ -163,11 +163,17 @@ export function displayName(space: SpaceLayout, lang: BoardLang): string {
 
 const BOARD_LANG_KEY = "monopoly:boardLang";
 
+/** Narrows an arbitrary stored or `<select>` value to a `BoardLang`,
+ * English for anything unrecognized. */
+export function parseBoardLang(value: string | null): BoardLang {
+  return value === "de" ? "de" : "en";
+}
+
 /** localStorage-backed, mirroring `api.ts`'s `getServerUrl`/`setServerUrl`
  * pattern - the board language is a per-viewer convenience, not game state. */
 export function getBoardLang(): BoardLang {
   try {
-    return localStorage.getItem(BOARD_LANG_KEY) === "de" ? "de" : "en";
+    return parseBoardLang(localStorage.getItem(BOARD_LANG_KEY));
   } catch {
     return "en";
   }

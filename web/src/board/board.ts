@@ -13,7 +13,7 @@ export class BoardView {
   private tokenContainers: HTMLElement[] = [];
   private nameEls: HTMLElement[] = [];
 
-  constructor(container: HTMLElement, lang: BoardLang = "en") {
+  constructor(container: HTMLElement, lang: BoardLang) {
     container.innerHTML = "";
     for (const space of BOARD_LAYOUT) {
       const el = document.createElement("div");
@@ -101,9 +101,9 @@ export class BoardView {
    * from an inverse transform to identity) rather than an instant snap -
    * plain CSS transitions don't tween a DOM reparent by themselves, since
    * the browser never treats the old and new parents as one continuous
-   * layout. Degrades gracefully to today's instant snap at very high
-   * playback speeds, where a later call simply overwrites an
-   * already-in-flight transition before a frame paints. */
+   * layout. Degrades gracefully to an instant snap at very high playback
+   * speeds, where a later call simply overwrites an already-in-flight
+   * transition before a frame paints. */
   private moveToken(player: number, space: number): void {
     const token = document.querySelector<HTMLElement>(`.token[data-player="${player}"]`);
     // Not found before the first `renderState()` creates the tokens - the

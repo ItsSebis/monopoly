@@ -41,7 +41,7 @@ A `Batch` whose player list is auto-generated instead of hand-written in a confi
 - `--strategies` — comma-separated strategy ids; defaults to every registered strategy (`monopoly_engine::STRATEGY_IDS`, so a newly-added custom strategy needs no CLI change to be included). Fails fast if fewer than 2 resolve, or any id is unrecognized — the same validation `batch`/`run` already do.
 - `--games` — total games (not per-pairing) — same meaning as `batch --games`.
 - `--seed` — same base-seed semantics as `batch`.
-- `--rules` — optional TOML/JSON file containing just a `RuleSet` (no `players` — those are generated from `--strategies`); defaults to `RuleSet::default()`.
+- `--rules` — optional TOML/JSON file containing a full `RuleSet` (every field, same shape as `--config`'s `[rules]` table, just without `players` — those are generated from `--strategies`); defaults to `RuleSet::default()`. `RuleSet` only defaults `max_turns` and the house-rule toggles, so this can't be a partial override file — start from an existing `[rules]` table and edit it.
 - `--out` — same `BatchRunRecord` JSON shape `batch --out` writes.
 - With no `--out`, prints the same win-rate/ROI/head-to-head summary `batch` does, and shows the same progress bar.
 

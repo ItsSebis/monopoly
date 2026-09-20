@@ -478,13 +478,13 @@ pub fn compute_stats(
                     }
                 }
             }
-            // `TradeDeclined` changes nothing and needs no arm - it falls
+            // `TradeDeclined` changes nothing and needs no arm — it falls
             // through to the wildcard below. A trade's cash side is complete
             // and unconditional (the engine only ever executes an already-
             // affordable trade, see `Game::trade_is_valid`), so unlike
             // `TaxPaid`/`RentPaid` this needs no `apply_debt` shortfall
             // handling. `cash_flow`'s existing categories (rent/tax/card/GO
-            // salary) don't have a trade bucket of their own - a trade's
+            // salary) don't have a trade bucket of their own — a trade's
             // cash and property movement is fully reflected in net worth and
             // the property timeline/ROI below, which is what batch/single-run
             // analysis actually keys off; adding a dedicated cash-flow

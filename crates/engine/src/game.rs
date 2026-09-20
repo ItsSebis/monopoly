@@ -348,10 +348,10 @@ impl Game {
                 continue;
             }
             // Bank bookkeeping stays frozen under `unlimited_houses`, matching
-            // `try_build`/`try_sell_house` — a bankruptcy this can actually
-            // reach in practice is presently prevented by `raise_cash`
-            // liquidating houses first, but the guard is symmetric with the
-            // other two sites regardless.
+            // `try_build`/`try_sell_house`: nothing was ever deducted for
+            // these buildings, so nothing is credited back either. (`raise_cash`
+            // usually sells them off before a bankruptcy reaches this loop
+            // anyway.)
             if !self.rules.unlimited_houses {
                 let houses = self.state.properties[space].houses;
                 if houses == 5 {
@@ -1690,7 +1690,7 @@ mod tests {
     fn a_trade_offering_a_property_with_houses_on_it_is_silently_rejected() {
         let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
         game.state.properties[1].owner = Some(0);
-        game.state.properties[1].houses = 1; // developed - can't be traded
+        game.state.properties[1].houses = 1; // developed — can't be traded
         game.state.properties[3].owner = Some(1);
         let offer = trade_offer(1, vec![1], 0, vec![3]);
         game.strategies[0] = Box::new(FixedTrader {
@@ -1699,7 +1699,7 @@ mod tests {
         });
         game.strategies[1] = Box::new(FixedTrader {
             offer: None,
-            accept: true, // would accept if asked - it's never asked
+            accept: true, // would accept if asked — it's never asked
         });
         let log_len_before = game.log.len();
 

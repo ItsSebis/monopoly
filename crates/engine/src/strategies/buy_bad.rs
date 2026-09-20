@@ -54,7 +54,7 @@ impl Strategy for BuyBad {
         Some(bid.min(cash_above_reserve(view, player, RESERVE)?))
     }
 
-    /// Never trades - its thin cash position and low-value holdings (see
+    /// Never trades — its thin cash position and low-value holdings (see
     /// `decide_build`'s doc comment) mean there's nothing worth proposing or
     /// accepting.
     fn decide_trade(&mut self, _view: &GameView, _player: usize) -> Option<TradeOffer> {

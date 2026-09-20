@@ -1,6 +1,6 @@
 use super::{
     accept_trade, build_within_reserve, cash_above_reserve, propose_monopoly_completing_trade,
-    raise_cash_cheapest_first,
+    raise_cash_cheapest_first, rent_to_price_score, RATIO_THRESHOLD,
 };
 use crate::board::{ColorGroup, SpaceKind};
 use crate::state::GameView;
@@ -12,19 +12,14 @@ use crate::strategy::{
 /// and Buy Good's $150, matching this strategy's overall "more deliberate
 /// than Buy All, more aggressive than Buy Good" character.
 const RESERVE: i64 = 100;
-/// Minimum weighted score to want a street (same threshold Buy Good uses;
-/// the weighting itself, not the bar, is what differs — see `score`).
-const RATIO_THRESHOLD: f64 = 0.06;
-/// Score bonus applied when a purchase would complete a color group.
-const MONOPOLY_BONUS: f64 = 0.15;
 
 /// A static per-group landing-frequency multiplier, from the Markov-chain
 /// research cited in docs/player-strategies.md: Jail itself is the
 /// single most-landed-on space, and the Orange/Red groups just past it
-/// inherit that traffic (Orange the most, Red close behind) — no built-in
-/// strategy weights purchases or bids by this today (Buy Good's own doc
-/// comment notes it was considered and skipped). Every other group is
-/// unweighted; this is a multiplier on top of Buy Good's existing
+/// inherit that traffic (Orange the most, Red close behind) — the gap this
+/// strategy exists to cover, which docs/player-strategies.md's Buy Good
+/// section records as considered and skipped there. Every other group is
+/// unweighted; this is a multiplier on top of the shared
 /// rent-to-price-plus-monopoly-bonus score, not a replacement for it.
 fn landing_weight(group: ColorGroup) -> f64 {
     match group {
@@ -34,29 +29,15 @@ fn landing_weight(group: ColorGroup) -> f64 {
     }
 }
 
-/// Buy Good's rent-to-price-plus-monopoly-bonus score, multiplied by
-/// `landing_weight` — see its doc comment.
-fn score(view: &GameView, player: usize, space: usize) -> Option<f64> {
+/// The shared `rent_to_price_score`, multiplied by `landing_weight` — and
+/// still judged against the same `RATIO_THRESHOLD` Buy Good uses, since the
+/// weighting, not the bar, is what differs. Railroads and utilities belong
+/// to no color group, so they keep the shared score unchanged.
+fn weighted_score(view: &GameView, player: usize, space: usize) -> Option<f64> {
+    let base = rent_to_price_score(view, player, space)?;
     match view.board.space(space) {
-        SpaceKind::Street {
-            group,
-            base_rent,
-            price,
-            ..
-        } => {
-            let completes_monopoly = view
-                .board
-                .group_members(group)
-                .all(|s| s == space || view.owner_of(s) == Some(player));
-            let bonus = if completes_monopoly {
-                MONOPOLY_BONUS
-            } else {
-                0.0
-            };
-            Some((base_rent as f64 / price as f64 + bonus) * landing_weight(group))
-        }
-        SpaceKind::Railroad { .. } | SpaceKind::Utility { .. } => Some(RATIO_THRESHOLD),
-        _ => None,
+        SpaceKind::Street { group, .. } => Some(base * landing_weight(group)),
+        _ => Some(base),
     }
 }
 
@@ -84,10 +65,11 @@ fn hotel_risk_jail_action(view: &GameView, player: usize) -> JailAction {
 
 /// Combines every gap docs/player-strategies.md's "where the built-ins
 /// diverge from this" section names into one strategy, rather than four
-/// separate registrations: landing-frequency-weighted valuation (`score`),
-/// house-supply-denial building (never converts to a hotel, keeping the
-/// bank's fixed 32-house stock locked up), an opponent-hotel-risk jail
-/// policy (`hotel_risk_jail_action`), and auction denial bidding (below).
+/// separate registrations: landing-frequency-weighted valuation
+/// (`weighted_score`), house-supply-denial building (never converts to a
+/// hotel, keeping the bank's fixed 32-house stock locked up), an
+/// opponent-hotel-risk jail policy (`hotel_risk_jail_action`), and auction
+/// denial bidding (below).
 /// Trading uses the same monopoly-completing heuristic Buy All/Buy Good
 /// share.
 #[derive(Debug, Default)]
@@ -98,7 +80,7 @@ impl Strategy for BuyShrewd {
         if view.player(player).cash - (offer.price as i64) < RESERVE {
             return false;
         }
-        score(view, player, offer.space).is_some_and(|s| s >= RATIO_THRESHOLD)
+        weighted_score(view, player, offer.space).is_some_and(|s| s >= RATIO_THRESHOLD)
     }
 
     fn decide_jail_action(&mut self, view: &GameView, player: usize) -> JailAction {
@@ -144,7 +126,7 @@ impl Strategy for BuyShrewd {
                 }
             }
         }
-        let score = score(view, player, space).filter(|&s| s >= RATIO_THRESHOLD)?;
+        let score = weighted_score(view, player, space).filter(|&s| s >= RATIO_THRESHOLD)?;
         let price = view.board.space(space).price()?;
         let valuation = (price as f64 * (1.0 + score)) as u32;
         Some(valuation.min(cash_above_reserve(view, player, RESERVE)?))
@@ -193,7 +175,7 @@ mod tests {
             panic!("expected a street");
         };
         let unweighted_ratio = base_rent as f64 / price as f64;
-        let weighted = score(&view, 0, 16).unwrap();
+        let weighted = weighted_score(&view, 0, 16).unwrap();
         assert!(
             (weighted - unweighted_ratio * 1.3).abs() < 1e-9,
             "expected the Orange 1.3x multiplier applied on top of the plain rent-to-price ratio"

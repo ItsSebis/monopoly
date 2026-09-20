@@ -2,7 +2,7 @@ import "./style.css";
 import * as api from "./api";
 import { parsePreservingSeeds } from "./bigJson";
 import { BoardView } from "./board/board";
-import { getBoardLang, setBoardLang } from "./board/layout";
+import { getBoardLang, parseBoardLang, setBoardLang } from "./board/layout";
 import { renderSingleRunCharts } from "./charts/singleRunCharts";
 import { renderBatchResults } from "./controls/batchResults";
 import { ConfigForm, type BatchPayload, type StartPayload } from "./controls/configForm";
@@ -241,7 +241,7 @@ serverUrlInput.addEventListener("change", () => api.setServerUrl(serverUrlInput.
 
 boardLangSelect.value = getBoardLang();
 boardLangSelect.addEventListener("change", () => {
-  const lang = boardLangSelect.value === "de" ? "de" : "en";
+  const lang = parseBoardLang(boardLangSelect.value);
   board.setLanguage(lang);
   setBoardLang(lang);
 });

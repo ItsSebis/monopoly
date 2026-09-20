@@ -119,7 +119,7 @@ pub enum Event {
         requested_cash: u32,
     },
     /// A trade `player` proposed to `to` that `to` declined (or that failed
-    /// re-validation - see `Game::maybe_trade`). No state changed.
+    /// re-validation — see `Game::maybe_trade`). No state changed.
     TradeDeclined {
         to: usize,
     },

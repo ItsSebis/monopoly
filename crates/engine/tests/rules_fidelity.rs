@@ -102,7 +102,7 @@ fn unknown_strategy_id_is_a_clear_error_not_a_panic() {
 
 /// Confirms the trading pipeline actually fires under realistic play (Buy
 /// All/Buy Good's real heuristic, not the hand-constructed offers the
-/// `game.rs` unit tests use) - not a claim about win-rate impact, which is
+/// `game.rs` unit tests use) — not a claim about win-rate impact, which is
 /// too seed-dependent to assert reliably in a fast test; that comparison is
 /// made instead via a real CLI batch run (`docs/player-strategies.md`'s
 /// Trading section, `docs/roadmap.md`'s Phase 7 demo).

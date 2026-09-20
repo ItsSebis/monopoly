@@ -42,7 +42,7 @@ fn players_config() -> impl Strategy<Value = Vec<PlayerConfig>> {
 /// deliberately breaks by design (see `game.rs`'s `try_build`) — fuzzing it
 /// here would fight the very invariant that test checks, rather than test
 /// it; covered instead by dedicated `game.rs` unit tests. `trading_enabled`
-/// and `double_go_salary` *are* fuzzed - `reconcile_final_cash` below has its
+/// and `double_go_salary` *are* fuzzed — `reconcile_final_cash` below has its
 /// own `TradeExecuted` arm and reads `PassGo`'s carried `amount` directly
 /// (rather than assuming the flat `rules.go_salary`), both independent of
 /// `stats.rs`'s equivalents.

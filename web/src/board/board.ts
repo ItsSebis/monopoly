@@ -1,4 +1,4 @@
-import { BOARD_LAYOUT } from "./layout";
+import { BOARD_LAYOUT, displayName, type BoardLang } from "./layout";
 import type { EventEnvelope, GameState } from "../types";
 
 const JAIL_SPACE = 10;
@@ -11,8 +11,9 @@ const JAIL_SPACE = 10;
 export class BoardView {
   private spaceEls: HTMLElement[] = [];
   private tokenContainers: HTMLElement[] = [];
+  private nameEls: HTMLElement[] = [];
 
-  constructor(container: HTMLElement) {
+  constructor(container: HTMLElement, lang: BoardLang = "en") {
     container.innerHTML = "";
     for (const space of BOARD_LAYOUT) {
       const el = document.createElement("div");
@@ -30,7 +31,7 @@ export class BoardView {
       el.appendChild(tokens);
       const name = document.createElement("div");
       name.className = "name";
-      name.textContent = space.name;
+      name.textContent = displayName(space, lang);
       el.appendChild(name);
       const houses = document.createElement("div");
       houses.className = "houses";
@@ -39,7 +40,17 @@ export class BoardView {
       container.appendChild(el);
       this.spaceEls.push(el);
       this.tokenContainers.push(tokens);
+      this.nameEls.push(name);
     }
+  }
+
+  /** Switches the board's own space labels between English and German - see
+   * `layout.ts`'s `BoardLang`. Nothing else about the board (colors,
+   * ownership, tokens) is language-dependent. */
+  setLanguage(lang: BoardLang): void {
+    BOARD_LAYOUT.forEach((space, index) => {
+      this.nameEls[index].textContent = displayName(space, lang);
+    });
   }
 
   /** Full re-sync to the engine's authoritative state - the ground truth,

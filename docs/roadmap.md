@@ -34,9 +34,9 @@ The `web/` Vite/TypeScript project: board renderer, `RuleSet`/`PlayerConfig` con
 
 ## Phase 6 — Analysis dashboard & history browser
 
-Charts (Chart.js) for every metric in [analysis-and-metrics.md](./analysis-and-metrics.md), the browser's batch-run flow (`POST /runs/batch`, progress indicator, aggregate dashboard), and the history browser (server-backed list/detail views with a `localStorage` recent-runs cache, degrading gracefully with no server reachable).
+Charts (Chart.js) for every metric in [analysis-and-metrics.md](./analysis-and-metrics.md), the browser's batch-run flow (`POST /runs/batch`, aggregate dashboard), and the history browser (server-backed list/detail views with a `localStorage` recent-runs cache, degrading gracefully with no server reachable). See [frontend.md](./frontend.md#batch-runs-from-the-ui) for why a real progress bar isn't part of this: a 5,000-game batch finishes server-side in 0.17s, before a poll could land.
 
-**Demo**: launch a 5,000-game batch from the browser, watch progress, then browse the resulting charts and drill into one specific game's full replay from the aggregate view.
+**Demo**: launch a 5,000-game batch from the browser (done in well under a second), then browse the resulting charts and drill into one specific game's full replay from the aggregate view.
 
 ## Phase 7 — Advanced strategies (stretch)
 

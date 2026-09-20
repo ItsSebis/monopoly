@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildIncomeTaxMode, buildPlayers, buildRuleSet } from "./configForm";
+import { buildGameCount, buildIncomeTaxMode, buildPlayers, buildRuleSet } from "./configForm";
 
 function formData(fields: Record<string, string>): FormData {
   const data = new FormData();
@@ -67,5 +67,11 @@ describe("buildPlayers", () => {
     expect(buildPlayers([{ name: "P1", strategy: "buy_good" }])).toEqual([
       { name: "P1", strategy: "buy_good" },
     ]);
+  });
+});
+
+describe("buildGameCount", () => {
+  it("reads the game_count field as a number", () => {
+    expect(buildGameCount(formData({ game_count: "5000" }))).toBe(5000);
   });
 });

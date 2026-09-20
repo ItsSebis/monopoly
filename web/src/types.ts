@@ -2,6 +2,8 @@
 // the frontend's only source of truth for these shapes - nothing here makes
 // a rules decision, it only types data the engine already produced.
 
+import type { ColorGroup } from "./board/layout";
+
 export type IncomeTaxMode =
   | { mode: "flat"; amount: number }
   | { mode: "percentage"; rate: number }
@@ -103,3 +105,125 @@ export interface EventEnvelope {
   seq: number;
   event: Event;
 }
+
+// Mirrors of `docs/analysis-and-metrics.md`'s stat shapes
+// (crates/engine/src/stats.rs, crates/engine/src/batch.rs) - a Run
+// record's `final_stats`/`aggregate_stats`.
+
+export interface CashFlowBreakdown {
+  rent_paid: number;
+  rent_received: number;
+  tax_paid: number;
+  card_net: number;
+  go_salary_collected: number;
+}
+
+export interface PropertyAcquired {
+  space: number;
+  owner: number;
+  turn: number;
+}
+
+export interface MonopolyCompleted {
+  group: ColorGroup;
+  owner: number;
+  turn: number;
+}
+
+export interface BankruptcyRecord {
+  player: number;
+  turn: number;
+  payee: number | null;
+}
+
+export interface PropertyRoi {
+  space: number;
+  owner: number | null;
+  rent_collected: number;
+  cost_basis: number;
+}
+
+export interface PerGameStats {
+  winner: number | null;
+  turns: number;
+  net_worth_by_turn: number[][];
+  cash_flow: CashFlowBreakdown[];
+  property_timeline: PropertyAcquired[];
+  monopolies_completed: MonopolyCompleted[];
+  bankruptcies: BankruptcyRecord[];
+  /** Indexed by `total - 2` for totals 2..=12. */
+  dice_roll_counts: number[];
+  /** One entry per board space. */
+  landing_counts: number[];
+  property_roi: PropertyRoi[];
+}
+
+export interface HeadToHead {
+  wins: number;
+  total: number;
+}
+
+export interface DistributionSummary {
+  mean: number;
+  median: number;
+  p10: number;
+  p90: number;
+}
+
+export interface AggregateStats {
+  games: number;
+  win_rate_by_strategy: Record<string, number>;
+  head_to_head: Record<string, Record<string, HeadToHead>>;
+  roi_by_strategy: Record<string, number>;
+  game_length: number[];
+  bankruptcy_turns: number[];
+  dice_roll_counts: number[];
+  landing_counts: number[];
+  final_net_worth_by_strategy: Record<string, DistributionSummary>;
+}
+
+/** `seed` is a `bigint`, not `number`: it's a full-range u64 that routinely
+ * exceeds `Number.MAX_SAFE_INTEGER` - see bigJson.ts, which api.ts uses to
+ * parse/stringify these shapes without losing precision on it. */
+export interface BatchGameSummary {
+  seed: bigint;
+  winner: number | null;
+  turns: number;
+}
+
+// Mirrors of `docs/data-model.md#run-record` - the archived shapes. The
+// server-assigned `id`/`kind`/`created_at` are added on top by `RunSummary`/
+// `RunDetail` below, matching what `GET /runs`/`GET /runs/{id}` actually
+// return.
+
+export interface SingleRunRecord {
+  rule_set: RuleSet;
+  players: PlayerConfig[];
+  seed: bigint;
+  events: EventEnvelope[];
+  final_stats: PerGameStats;
+}
+
+export interface BatchRunRecord {
+  rule_set: RuleSet;
+  players: PlayerConfig[];
+  seeds: bigint[];
+  per_game_summary: BatchGameSummary[];
+  aggregate_stats: AggregateStats;
+}
+
+/** `GET /runs` list item (`docs/api.md#get-runs`) - a lightweight preview,
+ * not a full record. */
+export interface RunSummary {
+  id: string;
+  kind: "single" | "batch";
+  created_at: string;
+  rule_set: RuleSet;
+  players: PlayerConfig[];
+  winner?: number | null;
+  games?: number;
+}
+
+export type RunDetail =
+  | ({ id: string; kind: "single"; created_at: string } & SingleRunRecord)
+  | ({ id: string; kind: "batch"; created_at: string } & BatchRunRecord);

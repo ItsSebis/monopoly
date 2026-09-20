@@ -60,3 +60,18 @@ impl WasmGame {
 pub fn strategy_ids() -> String {
     serde_json::to_string(monopoly_engine::STRATEGY_IDS).expect("strategy ids always serialize")
 }
+
+/// Deterministically re-simulates `(config, seed)` and returns the canonical
+/// `SingleRunRecord` JSON (`docs/data-model.md#run-record`) — the same shape
+/// the server archives and the same function `GET /runs/{id}/games/{seed}`
+/// calls natively. Lets the browser build the exact archive body for "save
+/// this run" (Phase 6) from just the inputs it already has, with no need to
+/// capture/replay its own live event stream.
+#[wasm_bindgen]
+pub fn build_single_run_record(config_json: &str, seed: u64) -> Result<String, JsError> {
+    let config: GameConfig =
+        serde_json::from_str(config_json).map_err(|e| JsError::new(&e.to_string()))?;
+    let record = monopoly_engine::build_single_run_record(config.rules, config.players, seed)
+        .map_err(|e: ConfigError| JsError::new(&e.to_string()))?;
+    serde_json::to_string(&record).map_err(|e| JsError::new(&e.to_string()))
+}

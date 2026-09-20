@@ -13,12 +13,15 @@ export function colorFor(value: number, max: number): string {
   return `hsl(210, 80%, ${lightness}%)`;
 }
 
-/** Renders a 40-space grid shaded by `values[space]` - reuses the same
- * layout table the live board uses, but with no tokens/ownership since this
- * is a read-only overlay, not a game in progress. */
+/** Renders a 40-space grid shaded by `values[space]` into its own child
+ * element - reuses the same layout table the live board uses, but with no
+ * tokens/ownership since this is a read-only overlay, not a game in
+ * progress. Appends a new grid rather than repurposing `container` itself,
+ * since callers pass a `chartSection()` result that already holds a
+ * heading - clearing/reclassing `container` directly would wipe it. */
 export function renderBoardHeatmap(container: HTMLElement, values: number[]): void {
-  container.innerHTML = "";
-  container.className = "board-grid";
+  const grid = document.createElement("div");
+  grid.className = "board-grid";
   const max = Math.max(0, ...values);
   for (const space of BOARD_LAYOUT) {
     const value = values[space.index] ?? 0;
@@ -29,6 +32,7 @@ export function renderBoardHeatmap(container: HTMLElement, values: number[]): vo
     cell.style.background = colorFor(value, max);
     cell.title = `${space.name}: ${value}`;
     cell.textContent = String(value);
-    container.appendChild(cell);
+    grid.appendChild(cell);
   }
+  container.appendChild(grid);
 }

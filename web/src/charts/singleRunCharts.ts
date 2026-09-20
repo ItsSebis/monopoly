@@ -83,7 +83,13 @@ export function renderSingleRunCharts(container: HTMLElement, stats: PerGameStat
     renderBarChart(
       canvasIn(chartSection(container, "ROI by property")),
       roiByProperty.map((r) => spaceName(r.space)),
-      [{ label: "Rent collected / cost basis", data: roiByProperty.map((r) => r.roi) }],
+      [
+        {
+          label: "Rent collected / cost basis",
+          data: roiByProperty.map((r) => r.roi),
+          color: roiByProperty.map((_, i) => colorForIndex(i)),
+        },
+      ],
       { indexAxis: "y" },
     ),
   );

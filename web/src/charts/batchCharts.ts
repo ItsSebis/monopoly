@@ -3,6 +3,7 @@
 // of numbers the engine already computed onto charts/tables.
 import { renderBarChart } from "./barChart";
 import { renderDiceAndLandingSections } from "./commonSections";
+import { colorForIndex } from "./colors";
 import { canvasIn, chartSection, destroyCharts, trackChart } from "./domHelpers";
 import { colorFor } from "./heatmap";
 import { bucket } from "./histogram";
@@ -30,13 +31,14 @@ export function renderBatchCharts(container: HTMLElement, stats: AggregateStats)
   summary.appendChild(document.createTextNode(`${stats.games} games`));
 
   const strategies = sortedKeys(stats.win_rate_by_strategy);
+  const strategyColors = strategies.map((_, i) => colorForIndex(i));
 
   trackChart(
     container,
     renderBarChart(
       canvasIn(chartSection(container, "Win rate by strategy")),
       strategies,
-      [{ label: "Win rate", data: strategies.map((s) => stats.win_rate_by_strategy[s] * 100) }],
+      [{ label: "Win rate", data: strategies.map((s) => stats.win_rate_by_strategy[s] * 100), color: strategyColors }],
     ),
   );
 
@@ -77,7 +79,13 @@ export function renderBatchCharts(container: HTMLElement, stats: AggregateStats)
     renderBarChart(
       canvasIn(chartSection(container, "ROI by strategy")),
       strategies,
-      [{ label: "Rent collected / cost basis", data: strategies.map((s) => stats.roi_by_strategy[s]) }],
+      [
+        {
+          label: "Rent collected / cost basis",
+          data: strategies.map((s) => stats.roi_by_strategy[s]),
+          color: strategyColors,
+        },
+      ],
     ),
   );
 

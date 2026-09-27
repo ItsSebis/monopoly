@@ -1,0 +1,31 @@
+[rules]
+starting_cash = 1500
+go_salary = 200
+jail_fine = 50
+luxury_tax = 75
+# Bounds worst-case game length so a `monopoly batch` run finishes quickly.
+max_turns = 300
+# The whole point of this file: without trading, most games with this
+# strategy mix never produce a winner within max_turns (see
+# docs/game-rules.md's Bankruptcy section and four_player.toml). Measured
+# directly (`monopoly batch --config examples/trading_enabled.toml --games
+# 3000`): only 23.9% of games produce a winner with this off, vs. 70.5% with
+# it on (see docs/roadmap.md's Phase 7 demo) - toggle this to false to
+# reproduce the "before" number with the same strategy mix.
+trading_enabled = true
+
+[rules.income_tax_mode]
+mode = "choice"
+flat_amount = 200
+
+[[players]]
+name = "Alice"
+strategy = "buy_good"
+
+[[players]]
+name = "Bob"
+strategy = "buy_all"
+
+[[players]]
+name = "Cara"
+strategy = "buy_bad"

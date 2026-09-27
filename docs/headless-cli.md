@@ -67,6 +67,16 @@ strategy = "buy_all"
 
 This is the exact `RuleSet`/`PlayerConfig` shape from [data-model.md](./data-model.md), just in TOML instead of JSON — the CLI accepts either.
 
+## Examples
+
+`examples/` has ready-to-run config files for `--config`/`--rules`:
+
+- `two_player.toml` / `four_player.toml` — minimal starting points.
+- `trading_enabled.toml` — reproduces [roadmap.md](./roadmap.md)'s Phase 7 trading demo (23.9% → 70.5% winner rate with `trading_enabled` off vs. on, same strategy mix).
+- `house_rules_variant.toml` — every optional house-rule toggle combined (`free_parking_pot`, `double_go_salary`, `unlimited_houses`).
+- `buy_shrewd_showdown.toml` — Buy Shrewd against the rest of the built-in roster.
+- `rules_only.toml` — a standalone `RuleSet` (no `players`) for `monopoly tournament --rules`.
+
 ## Exit codes and errors
 
 Config validation errors (unknown strategy id, fewer than two players) fail fast with a specific message before any simulation starts, rather than partway through a batch — `run_batch` validates the config once up front against a throwaway game before dispatching any seed to `rayon`.

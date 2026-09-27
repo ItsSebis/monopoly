@@ -1,0 +1,20 @@
+# A standalone `RuleSet` (no `players` - those come from `--strategies`
+# instead), for `monopoly tournament --rules`:
+#   monopoly tournament --rules examples/rules_only.toml --games 5000
+#
+# Unlike `--config` (`GameConfig` = `RuleSet` + `players`, under a `[rules]`
+# table - see two_player.toml), this file's fields sit at the top level
+# directly, since it's just a `RuleSet` on its own. `RuleSet` only defaults
+# `max_turns` and the three house-rule toggles (see docs/data-model.md), so
+# every other field below is required - this can't be a partial override of
+# `RuleSet::default()`.
+starting_cash = 1500
+go_salary = 200
+jail_fine = 50
+luxury_tax = 75
+max_turns = 500
+trading_enabled = true
+
+[income_tax_mode]
+mode = "choice"
+flat_amount = 200

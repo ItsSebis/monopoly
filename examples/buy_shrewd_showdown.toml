@@ -1,0 +1,35 @@
+[rules]
+starting_cash = 1500
+go_salary = 200
+jail_fine = 50
+luxury_tax = 75
+max_turns = 1000
+trading_enabled = true
+
+[rules.income_tax_mode]
+mode = "choice"
+flat_amount = 200
+
+# Buy Shrewd (docs/player-strategies.md) against the full built-in roster:
+# landing-frequency-weighted valuation, house-supply-denial building, an
+# opponent-hotel-risk jail policy, and auction denial bidding, all in one
+# strategy. Run as a batch to see how it stacks up:
+#   monopoly batch --config examples/buy_shrewd_showdown.toml --games 2000
+# or equivalently or more simply:
+#   monopoly tournament --games 2000
+
+[[players]]
+name = "Shrewd"
+strategy = "buy_shrewd"
+
+[[players]]
+name = "Alice"
+strategy = "buy_good"
+
+[[players]]
+name = "Bob"
+strategy = "buy_all"
+
+[[players]]
+name = "Cara"
+strategy = "buy_bad"

@@ -19,7 +19,7 @@ If you're new to this project, read in this order:
 1. [architecture.md](./architecture.md) — system shape, crate boundaries, and the key design decisions (native vs. WASM, determinism-as-storage).
 2. [game-rules.md](./game-rules.md) — the Monopoly rules being modeled and every configurable house-rule toggle.
 3. [simulation-engine.md](./simulation-engine.md) — the turn state machine, event log, and the `Strategy` trait.
-4. [player-strategies.md](./player-strategies.md) — the built-in automated behaviors (Buy All / Buy Good / Buy Bad / Buy None) and how to add custom ones.
+4. [player-strategies.md](./player-strategies.md) — the built-in automated behaviors (Buy All / Buy Good / Buy Bad / Buy None / Buy Shrewd) and how to add custom ones.
 5. [data-model.md](./data-model.md) — the shared schemas (`RuleSet`, `GameState`, events, archived runs) that every other doc references.
 6. [api.md](./api.md) — the archive server's REST API.
 7. [frontend.md](./frontend.md) — browser UI structure.

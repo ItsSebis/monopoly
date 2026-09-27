@@ -1,13 +1,18 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::state::GameView;
 
+/// `Serialize`/`Deserialize` (Phase 9, purely additive): the interactive
+/// server embeds these types directly in its decision/answer JSON
+/// (`crates/server/src/interactive/decision.rs`) instead of hand-duplicating
+/// them.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PurchaseOffer {
     pub space: usize,
     pub price: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JailAction {
     PayFine,
     RollForDoubles,
@@ -17,7 +22,7 @@ pub enum JailAction {
 /// `Strategy::decide_build`). Invalid actions (even-build violations, no
 /// bank supply left, wrong player, etc.) are silently skipped by the engine
 /// rather than erroring — a strategy is a heuristic, not a guarantee.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildAction {
     Build(usize),
     SellHouse(usize),
@@ -28,7 +33,7 @@ pub enum BuildAction {
 /// decision in practice — real bankruptcy resolution requires selling houses
 /// on a group before mortgaging any property in it — so one hook and one
 /// action type covers both, rather than splitting them across two hooks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MortgageAction {
     Mortgage(usize),
     SellHouse(usize),
@@ -41,7 +46,7 @@ pub enum MortgageAction {
 /// not the strategy, so a strategy proposing an invalid trade is simply
 /// refused rather than crashing anything, matching every other action type
 /// here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TradeOffer {
     pub to: usize,
     pub offered_properties: Vec<usize>,

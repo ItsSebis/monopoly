@@ -36,6 +36,32 @@ For a `batch` run only: regenerate and return a full `SingleRunRecord` (events +
 
 Remove a run from the archive (used by the history browser's cleanup action). Returns 204; 404 if `id` doesn't exist.
 
+## Interactive sessions (Phase 9)
+
+Server-authoritative human-vs-CPU play: the server holds the live, authoritative `Game` for a session, one dedicated OS thread per session (see [simulation-engine.md#interactive-sessions-the-human-strategy](./simulation-engine.md#interactive-sessions-the-human-strategy)). Plain REST polling, deliberately — no WebSocket/SSE: CPU turns resolve near-instantly server-side (same "no real progress to report" reasoning as `POST /runs/batch` above), so there's no slow work to push updates for.
+
+### `POST /sessions`
+
+Body: `{ "rules"?: RuleSet, "players": [PlayerConfig], "human_seat": usize, "seed"?: u64 }`. The human seat's own `PlayerConfig.strategy` is a placeholder (e.g. `"human"`) — ignored by session construction, since that seat is always played by whichever client is polling this session, not a registered strategy id. `rules` defaults like `POST /runs/batch`; `seed` defaults to a fresh random one. 400 if there are fewer than 2 players, `human_seat` is out of range, or a non-human seat's `strategy` id is unrecognized. 201 with a session snapshot: `{ "id", "human_seat", "state", "pending", "events", "seq", "game_over", "errored" }`.
+
+### `GET /sessions/{id}?since_seq=<u64>`
+
+Poll a session's current snapshot (same shape as the `POST` response). `events` is filtered to `seq > since_seq` (default 0, i.e. the full log so far). `pending` describes the decision the human seat is currently blocked on (one of the 7 `Strategy` hooks — `docs/simulation-engine.md#the-strategy-trait` — tagged by `kind`), or `null` if the game is between decisions or over. 404 for an unknown `id`.
+
+### `POST /sessions/{id}/decisions`
+
+Answer the currently-pending decision. Body is a `DecisionAnswer`, tagged by the same `kind` as the `pending` it's answering (e.g. `{ "kind": "Purchase", "buy": true }`). 404 unknown `id`; 409 if `kind` doesn't match what's actually pending (or nothing is); 410 if the game has already ended. 200 with a fresh snapshot on success.
+
+### `DELETE /sessions/{id}`
+
+Tear a session down mid-game or after it ends. 204; 404 if `id` doesn't exist. Safe to call at any point — it doesn't leave the session's game thread running (see the linked design note).
+
+### `GET /board`
+
+Static mechanical board data — `[{ "index", "kind", "group"?, "price"?, "base_rent"?, "house_rent"?, "house_cost"?, "mortgage_value"? }]` for all 40 spaces, serialized from `Board::standard()`. No space-name table exists in `monopoly-engine` yet, so `name` isn't part of this response.
+
+An idle-session reaper (`main.rs`, not part of `build_router`) drops any session whose `last_activity` is more than 30 minutes old.
+
 ## Error shape
 
 All errors return `{ "error": "message" }` with a standard HTTP status; there's no bespoke error envelope beyond that.

@@ -10,6 +10,14 @@ pub enum AppError {
     BadRequest(String),
     NotFound(String),
     Internal(String),
+    /// 409: the request conflicts with the resource's current state (Phase
+    /// 9's `POST /sessions/:id/decisions` when the submitted decision's kind
+    /// doesn't match the currently-pending one, or nothing is pending).
+    Conflict(String),
+    /// 410: the resource used to exist but is now permanently gone (Phase
+    /// 9's `POST /sessions/:id/decisions` once the game has already ended —
+    /// distinct from 404, since the session id was valid).
+    Gone(String),
 }
 
 impl IntoResponse for AppError {
@@ -18,6 +26,8 @@ impl IntoResponse for AppError {
             AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             AppError::NotFound(message) => (StatusCode::NOT_FOUND, message),
             AppError::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+            AppError::Conflict(message) => (StatusCode::CONFLICT, message),
+            AppError::Gone(message) => (StatusCode::GONE, message),
         };
         (status, Json(json!({ "error": message }))).into_response()
     }

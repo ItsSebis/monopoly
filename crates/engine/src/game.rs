@@ -29,7 +29,14 @@ pub struct Game {
     board: Board,
     rules: RuleSet,
     state: GameState,
-    strategies: Vec<Box<dyn Strategy>>,
+    // `+ Send`: widened in Phase 9 so the interactive server can run a `Game`
+    // to completion on a dedicated OS thread (a blocking `HumanStrategy` at
+    // one seat is what makes that thread the human player's resume point —
+    // see `crates/server/src/interactive/human_strategy.rs`). Every built-in
+    // strategy is already `Send` (plain data, no interior mutability), so
+    // this is a type-only widening with no behavior change for CPU-only
+    // games.
+    strategies: Vec<Box<dyn Strategy + Send>>,
     rng: StdRng,
     chance: Deck,
     community_chest: Deck,
@@ -80,7 +87,27 @@ impl Game {
                     .ok_or_else(|| ConfigError::UnknownStrategy(p.strategy.clone()))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let state = GameState::new(&rules, &names);
+        Self::with_strategies(rules, &names, strategies, seed)
+    }
+
+    /// The same construction `Game::new` does, minus the strategy-id
+    /// resolution loop: callers hand over already-built strategies directly.
+    /// Added in Phase 9 for the interactive server, which needs to inject a
+    /// `HumanStrategy` at one seat — something no strategy-id string can
+    /// express — while every CPU seat still goes through the normal
+    /// `make_strategy` lookup. `Game::new` is now just this plus that lookup,
+    /// so every existing caller (CLI, batch, tournament, the archive server,
+    /// engine-wasm) is unaffected.
+    pub fn with_strategies(
+        rules: RuleSet,
+        names: &[String],
+        strategies: Vec<Box<dyn Strategy + Send>>,
+        seed: u64,
+    ) -> Result<Self, ConfigError> {
+        if names.len() < 2 {
+            return Err(ConfigError::NotEnoughPlayers(names.len()));
+        }
+        let state = GameState::new(&rules, names);
         let mut rng = StdRng::seed_from_u64(seed);
         let (chance, community_chest) = standard_decks(&mut rng);
         Ok(Game {

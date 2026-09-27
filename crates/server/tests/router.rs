@@ -6,6 +6,7 @@ use http_body_util::BodyExt;
 use monopoly_engine::{build_single_run_record, PlayerConfig, RuleSet};
 use monopoly_server::{build_router, db, AppState};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
@@ -13,6 +14,7 @@ fn app() -> axum::Router {
     let conn = db::open(":memory:").unwrap();
     let state = AppState {
         db: Arc::new(Mutex::new(conn)),
+        sessions: Arc::new(Mutex::new(HashMap::new())),
     };
     build_router(state)
 }

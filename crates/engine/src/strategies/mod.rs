@@ -37,7 +37,12 @@ pub const STRATEGY_IDS: &[&str] = &[
 /// Construct a built-in strategy by its registered id (used by config files
 /// and the CLI). `None` for an unrecognized id, so callers can report a
 /// clear config error instead of panicking.
-pub fn make_strategy(id: &str) -> Option<Box<dyn Strategy>> {
+///
+/// Returns `Box<dyn Strategy + Send>` (widened in Phase 9, type-only): every
+/// built-in strategy here is a plain data struct with no interior mutability,
+/// so each is `Send` automatically — needed so the interactive server can
+/// move a `Game` holding these onto its own dedicated OS thread.
+pub fn make_strategy(id: &str) -> Option<Box<dyn Strategy + Send>> {
     match id {
         "buy_all" => Some(Box::new(BuyAll)),
         "buy_good" => Some(Box::new(BuyGood)),

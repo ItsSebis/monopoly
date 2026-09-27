@@ -6,6 +6,7 @@ pub mod db;
 pub mod error;
 pub mod handlers;
 pub mod ids;
+pub mod interactive;
 pub mod state;
 
 pub use handlers::build_router;

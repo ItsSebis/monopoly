@@ -73,7 +73,14 @@ pub struct GameState {
 }
 
 impl GameState {
-    pub(crate) fn new(rules: &RuleSet, names: &[String]) -> Self {
+    /// Public rather than `pub(crate)`: the interactive server (Phase 9)
+    /// needs to build an initial `GameState` snapshot to publish before its
+    /// session thread has finished constructing the `Game` itself (which
+    /// requires a `HumanStrategy` that in turn needs somewhere to publish
+    /// into) — see `crates/server/src/interactive/session.rs`. Otherwise
+    /// identical to how `Game::new`/`Game::with_strategies` build their own
+    /// initial state.
+    pub fn new(rules: &RuleSet, names: &[String]) -> Self {
         GameState {
             turn: 0,
             current_player: 0,

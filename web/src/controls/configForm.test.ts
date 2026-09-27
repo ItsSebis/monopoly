@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { buildGameCount, buildIncomeTaxMode, buildPlayers, buildRuleSet } from "./configForm";
+import { buildGameCount, buildIncomeTaxMode, buildPlayers, buildRuleSet, STATIC_STRATEGY_IDS } from "./configForm";
 
 function formData(fields: Record<string, string>): FormData {
   const data = new FormData();
@@ -76,5 +78,23 @@ describe("buildPlayers", () => {
 describe("buildGameCount", () => {
   it("reads the game_count field as a number", () => {
     expect(buildGameCount(formData({ game_count: "5000" }))).toBe(5000);
+  });
+});
+
+describe("STATIC_STRATEGY_IDS", () => {
+  it("matches engine::strategies::STRATEGY_IDS exactly (crates/engine/src/strategies/mod.rs)", () => {
+    // A literal duplicate, not a codegen step (see STATIC_STRATEGY_IDS's own
+    // comment) - this is the guard that's supposed to catch the two lists
+    // drifting apart, parsing the Rust source directly rather than trusting
+    // a human to remember to update both sides by hand.
+    const rustPath = fileURLToPath(
+      new URL("../../../crates/engine/src/strategies/mod.rs", import.meta.url),
+    );
+    const rustSource = readFileSync(rustPath, "utf-8");
+    const arrayMatch = rustSource.match(/STRATEGY_IDS:\s*&\[&str\]\s*=\s*&\[([\s\S]*?)\];/);
+    expect(arrayMatch).not.toBeNull();
+    const ids = Array.from(arrayMatch![1].matchAll(/"([^"]+)"/g)).map((m) => m[1]);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(STATIC_STRATEGY_IDS).toEqual(ids);
   });
 });

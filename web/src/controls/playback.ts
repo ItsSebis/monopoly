@@ -24,13 +24,27 @@ export class PlaybackController {
     private readonly onTurnBoundary: (state: GameState) => void,
   ) {}
 
-  /** One `step_turn()` call's worth of events, plus the resulting state to
-   * apply once every one of those events has been drained. */
+  /** One batch's worth of events (a Worker's `step_turn()` call, or a
+   * session poll's slice since the last one), plus the resulting state to
+   * apply once every one of those events has been drained.
+   *
+   * An empty `events` call with nothing still queued applies `state`
+   * immediately (there's nothing to catch up on). An empty `events` call
+   * with earlier events still draining - the common case for a session
+   * poll that landed between two CPU turns' worth of events, since most
+   * polls see no new events at all - must NOT apply `state` immediately:
+   * that would render the board ahead of animations still in flight
+   * (tokens jumping to their final position before their own `Move` events
+   * have played). Instead it replaces the *target* of the last
+   * already-queued batch, so the freshest known state still only gets
+   * applied once playback actually catches up to it. */
   enqueueTurn(events: EventEnvelope[], state: GameState): void {
     this.queue.push(...events);
     const last = events[events.length - 1];
     if (last) {
       this.pendingStates.push({ afterSeq: last.seq, state });
+    } else if (this.pendingStates.length > 0) {
+      this.pendingStates[this.pendingStates.length - 1].state = state;
     } else {
       this.onTurnBoundary(state);
     }

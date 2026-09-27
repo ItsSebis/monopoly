@@ -241,3 +241,100 @@ export interface RunSummary {
 export type RunDetail =
   | ({ id: string; kind: "single"; created_at: string } & SingleRunRecord)
   | ({ id: string; kind: "batch"; created_at: string } & BatchRunRecord);
+
+// Mirrors of `docs/api.md#interactive-sessions-phase-9`'s shapes
+// (crates/server/src/interactive/{routes,decision,board}.rs) - the 5
+// interactive-session endpoints `interactive/sessionController.ts` talks to.
+
+/** `GET /board` - static mechanical board data (`BoardSpaceDto`,
+ * `crates/server/src/interactive/board.rs`). `kind`/`group` mirror the
+ * engine's own `&'static str`/`ColorGroup` serialization exactly. */
+export interface BoardSpaceDto {
+  index: number;
+  kind:
+    | "go"
+    | "street"
+    | "railroad"
+    | "utility"
+    | "income_tax"
+    | "luxury_tax"
+    | "chance"
+    | "community_chest"
+    | "jail"
+    | "free_parking"
+    | "go_to_jail";
+  group?: ColorGroup;
+  price?: number;
+  base_rent?: number;
+  /** Rent with 1-4 houses (indices 0-3) and with a hotel (index 4). */
+  house_rent?: [number, number, number, number, number];
+  house_cost?: number;
+  mortgage_value?: number;
+}
+
+export interface PurchaseOffer {
+  space: number;
+  price: number;
+}
+
+export type BuildAction = { Build: number } | { SellHouse: number };
+export type MortgageAction = { Mortgage: number } | { SellHouse: number };
+
+export interface TradeOffer {
+  to: number;
+  offered_properties: number[];
+  offered_cash: number;
+  requested_properties: number[];
+  requested_cash: number;
+}
+
+/** `PendingDecision` (`crates/server/src/interactive/decision.rs`) - the 7
+ * `Strategy` hooks, tagged by `kind`. Published by a session snapshot when
+ * the human seat is the one blocked on a decision. */
+export type PendingDecision =
+  | { kind: "Purchase"; player: number; offer: PurchaseOffer }
+  | { kind: "JailAction"; player: number }
+  | { kind: "Build"; player: number }
+  | { kind: "Mortgage"; player: number; shortfall: number }
+  | { kind: "AuctionBid"; player: number; space: number }
+  | { kind: "TradeProposal"; player: number }
+  | { kind: "TradeResponse"; player: number; offer: TradeOffer };
+
+/** `DecisionAnswer` - the client's answer to whatever `PendingDecision` is
+ * currently pending, posted to `POST /sessions/{id}/decisions`. */
+export type DecisionAnswer =
+  | { kind: "Purchase"; buy: boolean }
+  | { kind: "JailAction"; action: JailAction }
+  | { kind: "Build"; actions: BuildAction[] }
+  | { kind: "Mortgage"; actions: MortgageAction[] }
+  | { kind: "AuctionBid"; amount: number | null }
+  | { kind: "TradeProposal"; offer: TradeOffer | null }
+  | { kind: "TradeResponse"; accept: boolean };
+
+export interface GameOver {
+  winner: number | null;
+  turns: number;
+}
+
+// `seed` is deliberately omitted below even though the server accepts one -
+// nothing in this app ever sets it (an interactive game always gets a fresh
+// random seed), and every other seed in this file is a `bigint` (see
+// bigJson.ts) since it routinely exceeds `Number.MAX_SAFE_INTEGER`; adding
+// an unused `seed?: number` field here would both go unused and violate
+// that convention the moment something did set it.
+export interface CreateSessionRequest {
+  rules?: RuleSet;
+  players: PlayerConfig[];
+  human_seat: number;
+}
+
+export interface SessionSnapshot {
+  id: string;
+  human_seat: number;
+  state: GameState;
+  pending: PendingDecision | null;
+  events: EventEnvelope[];
+  seq: number;
+  game_over: GameOver | null;
+  errored: string | null;
+}

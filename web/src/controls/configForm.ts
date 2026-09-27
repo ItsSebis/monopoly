@@ -4,6 +4,20 @@
 // UI-specific intermediate format.
 import type { GameConfig, IncomeTaxMode, PlayerConfig, RuleSet } from "../types";
 
+/** Mirrors `engine::strategies::STRATEGY_IDS` (`crates/engine/src/strategies/mod.rs`,
+ * which carries a comment pointing back here) so the form doesn't have to
+ * wait on a Worker's wasm init just to learn a static list - see
+ * `setStrategyIds()`'s own comment for why this is the form's *first* answer
+ * for every mode now, not just interactive's. Kept as a literal duplicate
+ * rather than a build-time codegen step, matching this repo's existing
+ * small-surface bias; drift from the Rust list is caught by
+ * `configForm.test.ts`'s `STATIC_STRATEGY_IDS` test (which reads and
+ * regex-parses `strategies/mod.rs` directly) and, as a runtime backstop,
+ * `setStrategyIds()`'s own mismatch warning below. */
+export const STATIC_STRATEGY_IDS = ["buy_all", "buy_good", "buy_bad", "buy_none", "buy_shrewd", "buy_optimal"];
+
+export type RunMode = "live" | "batch" | "interactive";
+
 /** `seed` is a `bigint`, matching every other seed in the app (see
  * types.ts's `SingleRunRecord.seed`) so `startReplay()` has one seed type
  * regardless of whether a game is freshly started or replayed. */
@@ -16,6 +30,14 @@ export interface BatchPayload {
   ruleSet: RuleSet;
   players: PlayerConfig[];
   gameCount: number;
+}
+
+/** The human seat's own `strategy` is a placeholder the server ignores
+ * (docs/api.md#interactive-sessions-phase-9) - set to `"human"` below purely
+ * for a clearer wire payload, not because anything reads it back. */
+export interface StartInteractivePayload {
+  config: GameConfig;
+  humanSeat: number;
 }
 
 // The next three functions are pure `FormData` -> engine-shape mappings,
@@ -65,10 +87,11 @@ export function buildGameCount(data: FormData): number {
 export interface ConfigFormHandlers {
   onStart: (payload: StartPayload) => void;
   onRunBatch: (payload: BatchPayload) => void;
+  onStartInteractive: (payload: StartInteractivePayload) => void;
 }
 
 export class ConfigForm {
-  private strategyIds: string[] = [];
+  private strategyIds: string[] = STATIC_STRATEGY_IDS;
   private readonly playerRowsEl: HTMLElement;
   private readonly errorEl: HTMLElement;
   private readonly startButton: HTMLButtonElement;
@@ -90,11 +113,21 @@ export class ConfigForm {
     formEl.querySelectorAll<HTMLInputElement>('input[name="run_mode"]').forEach((radio) => {
       radio.addEventListener("change", () => this.updateModeFields());
     });
-    this.updateModeFields();
     formEl.addEventListener("submit", (event) => {
       event.preventDefault();
       this.submit();
     });
+
+    // Every registered strategy id is known statically (`STATIC_STRATEGY_IDS`
+    // above) - the form doesn't actually need a Worker's wasm init to be
+    // usable, only "live" mode's Start does (it drives that same Worker).
+    // Seeding 2 default rows and enabling controls immediately means every
+    // mode, live included, is interactable right away; `setStrategyIds()`
+    // (below) just reconciles the list once the Worker's `ready` message
+    // actually arrives, which no longer gates anything.
+    this.addPlayerRow();
+    this.addPlayerRow();
+    this.updateModeFields();
   }
 
   /** Disables the submit button while a batch request is in flight - a
@@ -104,43 +137,53 @@ export class ConfigForm {
     this.startButton.disabled = busy;
   }
 
-  /** Called once the worker reports the engine's registered strategy ids
-   * (docs/frontend.md's "strategy dropdown"); seeds the form with 2 default
-   * player rows and enables controls that need those ids to make sense. */
+  /** Called once the Worker reports the engine's registered strategy ids -
+   * reconciles `STATIC_STRATEGY_IDS`'s copy with the real list for any
+   * *future* player row (existing rows/selections are left alone). Since the
+   * two are meant to be kept identical, this is normally a no-op in
+   * practice; it's not load-bearing for the form's usability the way it was
+   * before (see the constructor). A mismatch here means the Rust and TS
+   * lists have drifted apart *and* `configForm.test.ts`'s own drift test
+   * somehow didn't catch it (e.g. it wasn't run) - surfaced loudly enough to
+   * notice without failing a real user's session over it. */
   setStrategyIds(ids: string[]): void {
+    if (ids.length !== this.strategyIds.length || ids.some((id, i) => id !== this.strategyIds[i])) {
+      console.warn(
+        "STATIC_STRATEGY_IDS (configForm.ts) has drifted from the Worker's real strategy ids.",
+        { static: this.strategyIds, real: ids },
+      );
+    }
     this.strategyIds = ids;
-    this.addPlayerRow();
-    this.addPlayerRow();
-    this.formEl.querySelector<HTMLButtonElement>("#add-player")!.disabled = false;
-    this.formEl.querySelector<HTMLButtonElement>("#start-button")!.disabled = false;
-    this.formEl.querySelector<HTMLElement>("#loading-note")!.hidden = true;
   }
 
   showError(message: string): void {
     this.errorEl.textContent = message;
   }
 
-  /** Re-disables controls that depend on a worker's `ready` message - used
-   * when starting a fresh worker for a new game, so Start can't race ahead
-   * of that worker's own wasm init. */
-  awaitReady(): void {
-    this.formEl.querySelector<HTMLButtonElement>("#add-player")!.disabled = true;
-    this.formEl.querySelector<HTMLButtonElement>("#start-button")!.disabled = true;
-    this.formEl.querySelector<HTMLElement>("#loading-note")!.hidden = false;
+  /** Resets the player-rows editor to a fresh default pair - called when
+   * "New game" tears down and restarts the live Worker, so the next game
+   * doesn't inherit the just-finished one's roster. */
+  resetPlayerRows(): void {
     this.playerRowsEl.innerHTML = "";
     this.rowCount = 0;
+    this.addPlayerRow();
+    this.addPlayerRow();
   }
 
-  private mode(): "live" | "batch" {
+  private mode(): RunMode {
     const checked = this.formEl.querySelector<HTMLInputElement>('input[name="run_mode"]:checked');
-    return checked?.value === "batch" ? "batch" : "live";
+    if (checked?.value === "batch") return "batch";
+    if (checked?.value === "interactive") return "interactive";
+    return "live";
   }
 
   private updateModeFields(): void {
-    const batch = this.mode() === "batch";
-    this.seedField.hidden = batch;
-    this.gameCountField.hidden = !batch;
-    this.startButton.textContent = batch ? "Run batch" : "Start";
+    const mode = this.mode();
+    const startLabel: Record<RunMode, string> = { live: "Start", batch: "Run batch", interactive: "Play" };
+    this.formEl.dataset.mode = mode;
+    this.seedField.hidden = mode !== "live";
+    this.gameCountField.hidden = mode !== "batch";
+    this.startButton.textContent = startLabel[mode];
   }
 
   private addPlayerRow(): void {
@@ -163,18 +206,37 @@ export class ConfigForm {
       strategySelect.appendChild(option);
     }
 
+    // Only relevant/visible in interactive mode (`.human-seat-field`'s CSS,
+    // toggled by `#config-form[data-mode]`) - picks which row's seat the
+    // human client plays, the rest are CPU-controlled via their own
+    // `strategySelect` above.
+    const humanField = document.createElement("label");
+    humanField.className = "human-seat-field";
+    const humanRadio = document.createElement("input");
+    humanRadio.type = "radio";
+    humanRadio.name = "human_seat";
+    humanRadio.checked = index === 0;
+    humanField.append(humanRadio, " You");
+
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.textContent = "Remove";
-    removeButton.addEventListener("click", () => row.remove());
+    removeButton.addEventListener("click", () => {
+      const wasHuman = humanRadio.checked;
+      row.remove();
+      if (wasHuman) {
+        this.playerRowsEl.querySelector<HTMLInputElement>('input[name="human_seat"]')?.click();
+      }
+    });
 
-    row.append(nameInput, strategySelect, removeButton);
+    row.append(nameInput, strategySelect, humanField, removeButton);
     this.playerRowsEl.appendChild(row);
   }
 
   private submit(): void {
     this.errorEl.textContent = "";
-    const rows = Array.from(this.playerRowsEl.querySelectorAll<HTMLElement>(".player-row")).map((row) => ({
+    const rowEls = Array.from(this.playerRowsEl.querySelectorAll<HTMLElement>(".player-row"));
+    const rows = rowEls.map((row) => ({
       name: row.querySelector<HTMLInputElement>(".player-name")!.value,
       strategy: row.querySelector<HTMLSelectElement>(".player-strategy")!.value,
     }));
@@ -186,9 +248,18 @@ export class ConfigForm {
     const data = new FormData(this.formEl);
     const rules = buildRuleSet(data);
     const players = buildPlayers(rows);
+    const mode = this.mode();
 
-    if (this.mode() === "batch") {
+    if (mode === "batch") {
       this.handlers.onRunBatch({ ruleSet: rules, players, gameCount: buildGameCount(data) });
+      return;
+    }
+
+    if (mode === "interactive") {
+      const humanRow = rowEls.findIndex((row) => row.querySelector<HTMLInputElement>('input[name="human_seat"]')?.checked);
+      const humanSeat = humanRow === -1 ? 0 : humanRow;
+      players[humanSeat] = { ...players[humanSeat], strategy: "human" };
+      this.handlers.onStartInteractive({ config: { rules, players }, humanSeat });
       return;
     }
 

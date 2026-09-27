@@ -1,5 +1,5 @@
 import { BOARD_LAYOUT, displayName, type BoardLang } from "./layout";
-import type { EventEnvelope, GameState } from "../types";
+import type { BoardSpaceDto, EventEnvelope, GameState } from "../types";
 
 const JAIL_SPACE = 10;
 
@@ -12,6 +12,11 @@ export class BoardView {
   private spaceEls: HTMLElement[] = [];
   private tokenContainers: HTMLElement[] = [];
   private nameEls: HTMLElement[] = [];
+  private houseEls: HTMLElement[] = [];
+  private tooltipEls: HTMLElement[] = [];
+  private lastOwner: (number | null)[] = BOARD_LAYOUT.map(() => null);
+  private lastHouses: number[] = BOARD_LAYOUT.map(() => 0);
+  private boardData: BoardSpaceDto[] = [];
 
   constructor(container: HTMLElement, lang: BoardLang) {
     container.innerHTML = "";
@@ -20,28 +25,64 @@ export class BoardView {
       el.className = "space";
       el.style.gridRow = String(space.row + 1);
       el.style.gridColumn = String(space.col + 1);
+
+      // Everything that must stay clipped to the tile (tight board cells
+      // easily overflow a long property name) lives in `.space-inner`;
+      // `.space` itself stays `overflow: visible` so the hover tooltip -
+      // deliberately positioned *above* the tile - isn't clipped by the
+      // same rule that keeps the name/houses text contained.
+      const inner = document.createElement("div");
+      inner.className = "space-inner";
+      el.appendChild(inner);
+
       if (space.colorGroup) {
         const bar = document.createElement("div");
         bar.className = "color-bar";
         bar.style.background = colorForGroup(space.colorGroup);
-        el.appendChild(bar);
+        inner.appendChild(bar);
       }
       const tokens = document.createElement("div");
       tokens.className = "tokens";
-      el.appendChild(tokens);
+      inner.appendChild(tokens);
       const name = document.createElement("div");
       name.className = "name";
       name.textContent = displayName(space, lang);
-      el.appendChild(name);
+      inner.appendChild(name);
       const houses = document.createElement("div");
       houses.className = "houses";
-      el.appendChild(houses);
+      inner.appendChild(houses);
+      const tooltip = document.createElement("div");
+      tooltip.className = "rent-tooltip";
+      el.appendChild(tooltip);
 
       container.appendChild(el);
       this.spaceEls.push(el);
       this.tokenContainers.push(tokens);
       this.nameEls.push(name);
+      this.houseEls.push(houses);
+      this.tooltipEls.push(tooltip);
     }
+  }
+
+  /** Enriches the hover tooltip with real price/rent data from `GET /board`
+   * (`interactive/sessionController.ts` fetches this once at startup) -
+   * optional and purely additive, so plain offline live/batch play still
+   * renders a perfectly usable board without ever calling the server. */
+  setBoardData(data: BoardSpaceDto[]): void {
+    this.boardData = data;
+    BOARD_LAYOUT.forEach((space, index) => {
+      this.tooltipEls[index].textContent = this.tooltipText(space.name, this.boardData[index]);
+    });
+  }
+
+  private tooltipText(name: string, dto: BoardSpaceDto | undefined): string {
+    if (!dto) return name;
+    if (dto.price === undefined) return name;
+    const parts = [`${name} — $${dto.price}`];
+    if (dto.base_rent !== undefined) parts.push(`rent $${dto.base_rent}`);
+    if (dto.house_rent) parts.push(`up to $${dto.house_rent[4]} with a hotel`);
+    if (dto.mortgage_value !== undefined) parts.push(`mortgage $${dto.mortgage_value}`);
+    return parts.join(", ");
   }
 
   /** Switches the board's own space labels between English and German - see
@@ -54,7 +95,11 @@ export class BoardView {
   }
 
   /** Full re-sync to the engine's authoritative state - the ground truth,
-   * called once per turn. */
+   * called once per turn. Diffs against the previous call's ownership/house
+   * count per space so only what actually changed gets a brief change-pulse
+   * - the CSS `transition` on `.space`'s own background handles ownership
+   * smoothly for free, this only covers the house-count text, which a plain
+   * `textContent` swap can't tween. */
   renderState(state: GameState): void {
     for (let space = 0; space < this.spaceEls.length; space++) {
       const el = this.spaceEls[space];
@@ -66,8 +111,17 @@ export class BoardView {
         el.classList.add(`owned-${property.owner}`);
       }
       el.classList.toggle("mortgaged", property.mortgaged);
-      el.querySelector(".houses")!.textContent =
+      this.houseEls[space].textContent =
         property.houses === 0 ? "" : property.houses === 5 ? "🏨" : "🏠".repeat(property.houses);
+
+      if (property.houses !== this.lastHouses[space]) {
+        this.pulse(this.houseEls[space], "houses-changed");
+      }
+      if (property.owner !== this.lastOwner[space]) {
+        this.pulse(el, "ownership-changed");
+      }
+      this.lastOwner[space] = property.owner;
+      this.lastHouses[space] = property.houses;
     }
 
     for (const tokens of this.tokenContainers) tokens.innerHTML = "";
@@ -122,10 +176,26 @@ export class BoardView {
     token.getBoundingClientRect(); // forces a reflow so the line above takes effect before the next one
     token.style.transition = "transform 250ms ease-out";
     token.style.transform = "";
+
+    this.pulse(this.spaceEls[space], "arrived");
+  }
+
+  /** Re-triggers a one-shot CSS animation class - forces a reflow after
+   * removing it so a space that changes twice in quick succession (e.g. two
+   * tokens landing there back to back) restarts the animation instead of a
+   * no-op class toggle, then clears it once the animation itself actually
+   * ends (`animationend`, not a magic-number `setTimeout` that would drift
+   * out of sync if a CSS duration here ever changed without a matching edit
+   * here). */
+  private pulse(el: HTMLElement, className: string): void {
+    el.classList.remove(className);
+    void el.offsetWidth;
+    el.classList.add(className);
+    el.addEventListener("animationend", () => el.classList.remove(className), { once: true });
   }
 }
 
-function colorForGroup(group: string): string {
+export function colorForGroup(group: string): string {
   const colors: Record<string, string> = {
     Brown: "#955436",
     LightBlue: "#aae0fa",

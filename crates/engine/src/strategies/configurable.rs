@@ -1,23 +1,30 @@
 //! A composable strategy (Phase 8, docs/roadmap.md): every axis the five
 //! named strategies vary along, expressed as data (`ConfigurableParams`)
 //! instead of a new Rust type per combination. This is what
-//! `monopoly sweep` (crates/cli/src/main.rs) actually searches over, via the
-//! `cfg:{json}` strategy id (`make_strategy`, below) — a combination doesn't
-//! need its own registered name to be run through a batch.
+//! `monopoly sweep` (`crates/cli/src/sweep.rs`) actually searches over, via
+//! the `cfg:{json}` strategy id (`make_strategy`, `strategies/mod.rs`) — a
+//! combination doesn't need its own registered name to be run through a
+//! batch.
 //!
 //! Not every axis a named strategy varies on is represented here (Buy Bad's
 //! inverse-overbid auction logic and Buy None's total abstention have no
-//! analog below) — only the axes the sweep actually searches, chosen so that
-//! `Configurable` can reproduce Buy All, Buy Good, and Buy Shrewd exactly
-//! (see this module's tests) without trying to be a strict superset of every
-//! built-in.
+//! analog below) — only the axes the sweep actually searches. `Configurable`
+//! also does *not* generally reproduce Buy All: Buy All buys/bids on
+//! anything affordable with no valuation threshold at all, while every
+//! `Configurable` purchase/bid is gated by `RATIO_THRESHOLD` regardless of
+//! parameters — this module's tests check a narrow fixture where the two
+//! happen to agree (see
+//! `configurable_matches_buy_all_on_a_narrow_overlap_fixture`'s doc
+//! comment), not general equivalence. Buy Good and Buy Shrewd, by contrast,
+//! *are* reproduced exactly, since their own decision logic is already
+//! exactly what `Configurable` expresses.
 
 use super::{
     accept_trade, affordable_jail_action, build_within_reserve, cash_above_reserve,
-    hotel_risk_jail_action, patient_jail_action, propose_monopoly_completing_trade,
-    raise_cash_cheapest_first, rent_to_price_score, weighted_score, RATIO_THRESHOLD,
+    denial_bid_applies, hotel_risk_jail_action, patient_jail_action,
+    propose_monopoly_completing_trade, raise_cash_cheapest_first, rent_to_price_score,
+    valuation_capped_bid, weighted_score, RATIO_THRESHOLD,
 };
-use crate::board::SpaceKind;
 use crate::state::GameView;
 use crate::strategy::{
     BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy, TradeOffer,
@@ -170,30 +177,18 @@ impl Strategy for Configurable {
     /// `AuctionPolicy::ValuationCappedWithDenial`; otherwise the plain
     /// valuation-capped bid every `Valuation`-scoring strategy shares.
     fn decide_auction_bid(&mut self, view: &GameView, player: usize, space: usize) -> Option<u32> {
-        if self.0.auction == AuctionPolicy::ValuationCappedWithDenial {
-            if let SpaceKind::Street { group, .. } = view.board.space(space) {
-                let other_members: Vec<usize> = view
-                    .board
-                    .group_members(group)
-                    .filter(|&m| m != space)
-                    .collect();
-                if let Some(sole_owner) = other_members.first().and_then(|&m| view.owner_of(m)) {
-                    let one_player_holds_the_rest = sole_owner != player
-                        && other_members
-                            .iter()
-                            .all(|&m| view.owner_of(m) == Some(sole_owner));
-                    if one_player_holds_the_rest {
-                        return cash_above_reserve(view, player, self.0.reserve);
-                    }
-                }
-            }
+        if self.0.auction == AuctionPolicy::ValuationCappedWithDenial
+            && denial_bid_applies(view, player, space)
+        {
+            return cash_above_reserve(view, player, self.0.reserve);
         }
-        let score = self
-            .score(view, player, space)
-            .filter(|&s| s >= RATIO_THRESHOLD)?;
-        let price = view.board.space(space).price()?;
-        let valuation = (price as f64 * (1.0 + score)) as u32;
-        Some(valuation.min(cash_above_reserve(view, player, self.0.reserve)?))
+        valuation_capped_bid(
+            self.score(view, player, space),
+            view,
+            player,
+            space,
+            self.0.reserve,
+        )
     }
 
     fn decide_trade(&mut self, view: &GameView, player: usize) -> Option<TradeOffer> {
@@ -229,12 +224,12 @@ mod tests {
     }
 
     const BUY_ALL_PARAMS: ConfigurableParams = ConfigurableParams {
-        valuation: Valuation::RentToPrice, // irrelevant: BuyAll ignores valuation
+        valuation: Valuation::RentToPrice,
         jail: JailPolicy::PayIfAffordable,
         build: BuildPolicy {
             stop_before_hotel: false,
         },
-        auction: AuctionPolicy::ValuationCapped, // irrelevant: BuyAll ignores valuation
+        auction: AuctionPolicy::ValuationCapped,
         trade: TradePolicy::MonopolyCompleting,
         reserve: 50,
     };
@@ -250,16 +245,9 @@ mod tests {
         reserve: 150,
     };
 
-    const BUY_SHREWD_PARAMS: ConfigurableParams = ConfigurableParams {
-        valuation: Valuation::Weighted,
-        jail: JailPolicy::HotelRisk,
-        build: BuildPolicy {
-            stop_before_hotel: true,
-        },
-        auction: AuctionPolicy::ValuationCappedWithDenial,
-        trade: TradePolicy::MonopolyCompleting,
-        reserve: 100,
-    };
+    // Buy Shrewd's params happen to equal `ConfigurableParams::default()`
+    // (see its doc comment) — used directly below rather than duplicated
+    // here as a second, easily-drifting copy of the same values.
 
     /// A handful of property/cash fixtures exercised against every purchase
     /// offer's price/space in play, not just one — cheap street, expensive
@@ -286,8 +274,24 @@ mod tests {
         ]
     }
 
+    /// `Configurable` does NOT generally reproduce Buy All (see the module
+    /// doc comment): Buy All buys/bids on anything affordable with no
+    /// valuation threshold, while every `Configurable` purchase/bid is
+    /// gated by `RATIO_THRESHOLD` regardless of parameters. This fixture is
+    /// deliberately constructed so every checked decision falls in the
+    /// narrow region where the two happen to agree — build/jail logic is
+    /// genuinely identical between them, and purchase/auction agree here
+    /// only because (a) the shared state already owns both Brown properties
+    /// (see below), which pushes Mediterranean's score over threshold via
+    /// the monopoly bonus rather than its own (sub-threshold) rent-to-price
+    /// ratio, and (b) the auction check's cash is squeezed so the reserve
+    /// cap, not the valuation, binds. It is not evidence that `Configurable`
+    /// can express Buy All's actual "buy/bid anything affordable" behavior
+    /// in general — it provably can't (a `RATIO_THRESHOLD`-gated purchase on
+    /// a genuinely low-value property, e.g. Mediterranean *without* the
+    /// monopoly bonus, returns `false` where Buy All returns `true`).
     #[test]
-    fn configurable_matches_buy_all_on_purchase_and_build_and_jail() {
+    fn configurable_matches_buy_all_on_a_narrow_overlap_fixture() {
         let board = Board::standard();
         let rules = RuleSet::default();
         let mut state = two_player_state(&rules);
@@ -380,6 +384,7 @@ mod tests {
 
     #[test]
     fn configurable_matches_buy_shrewd_on_purchase_and_build_and_jail_and_auction() {
+        let buy_shrewd_params = ConfigurableParams::default();
         let board = Board::standard();
         let rules = RuleSet::default();
         let mut state = two_player_state(&rules);
@@ -395,7 +400,7 @@ mod tests {
 
         for offer in purchase_offers() {
             assert_eq!(
-                Configurable(BUY_SHREWD_PARAMS).decide_purchase(&view, 0, &offer),
+                Configurable(buy_shrewd_params).decide_purchase(&view, 0, &offer),
                 BuyShrewd.decide_purchase(&view, 0, &offer),
                 "purchase mismatch for space {}",
                 offer.space
@@ -415,18 +420,41 @@ mod tests {
             state: &built_up_state,
         };
         assert_eq!(
-            Configurable(BUY_SHREWD_PARAMS).decide_build(&built_up_view, 0),
+            Configurable(buy_shrewd_params).decide_build(&built_up_view, 0),
             BuyShrewd.decide_build(&built_up_view, 0)
         );
 
         assert_eq!(
-            Configurable(BUY_SHREWD_PARAMS).decide_jail_action(&view, 0),
-            BuyShrewd.decide_jail_action(&view, 0)
+            Configurable(buy_shrewd_params).decide_jail_action(&view, 0),
+            BuyShrewd.decide_jail_action(&view, 0),
+            "no opponent holds a built monopoly in this fixture"
+        );
+
+        // The no-opponent-monopoly case above is exactly where
+        // `JailPolicy::HotelRisk` and `JailPolicy::PayIfAffordable` happen to
+        // agree (both pay if affordable) — so it alone can't distinguish a
+        // `Configurable` that actually dispatches to `hotel_risk_jail_action`
+        // from one that doesn't. Check the case that does: an opponent
+        // holding a built monopoly, where the two policies diverge.
+        let mut opponent_built_state = two_player_state(&rules);
+        opponent_built_state.players[0].cash = 800;
+        opponent_built_state.properties[1].owner = Some(1);
+        opponent_built_state.properties[3].owner = Some(1);
+        opponent_built_state.properties[1].houses = 1; // player 1's Brown monopoly is built up
+        let opponent_built_view = GameView {
+            board: &board,
+            rules: &rules,
+            state: &opponent_built_state,
+        };
+        assert_eq!(
+            Configurable(buy_shrewd_params).decide_jail_action(&opponent_built_view, 0),
+            BuyShrewd.decide_jail_action(&opponent_built_view, 0),
+            "an opponent's built monopoly should flip both to RollForDoubles"
         );
 
         for space in [1usize, 16, 39, 5] {
             assert_eq!(
-                Configurable(BUY_SHREWD_PARAMS).decide_auction_bid(&view, 0, space),
+                Configurable(buy_shrewd_params).decide_auction_bid(&view, 0, space),
                 BuyShrewd.decide_auction_bid(&view, 0, space),
                 "auction bid mismatch for space {space}"
             );

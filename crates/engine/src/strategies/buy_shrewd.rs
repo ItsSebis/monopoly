@@ -1,8 +1,8 @@
 use super::{
-    accept_trade, build_within_reserve, cash_above_reserve, hotel_risk_jail_action,
-    propose_monopoly_completing_trade, raise_cash_cheapest_first, weighted_score, RATIO_THRESHOLD,
+    accept_trade, build_within_reserve, cash_above_reserve, denial_bid_applies,
+    hotel_risk_jail_action, propose_monopoly_completing_trade, raise_cash_cheapest_first,
+    valuation_capped_bid, weighted_score, RATIO_THRESHOLD,
 };
-use crate::board::SpaceKind;
 use crate::state::GameView;
 use crate::strategy::{
     BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy, TradeOffer,
@@ -60,26 +60,16 @@ impl Strategy for BuyShrewd {
     /// monopoly. Otherwise bids its own (landing-frequency-weighted)
     /// valuation, the same way Buy Good does.
     fn decide_auction_bid(&mut self, view: &GameView, player: usize, space: usize) -> Option<u32> {
-        if let SpaceKind::Street { group, .. } = view.board.space(space) {
-            let other_members: Vec<usize> = view
-                .board
-                .group_members(group)
-                .filter(|&m| m != space)
-                .collect();
-            if let Some(sole_owner) = other_members.first().and_then(|&m| view.owner_of(m)) {
-                let one_player_holds_the_rest = sole_owner != player
-                    && other_members
-                        .iter()
-                        .all(|&m| view.owner_of(m) == Some(sole_owner));
-                if one_player_holds_the_rest {
-                    return cash_above_reserve(view, player, RESERVE);
-                }
-            }
+        if denial_bid_applies(view, player, space) {
+            return cash_above_reserve(view, player, RESERVE);
         }
-        let score = weighted_score(view, player, space).filter(|&s| s >= RATIO_THRESHOLD)?;
-        let price = view.board.space(space).price()?;
-        let valuation = (price as f64 * (1.0 + score)) as u32;
-        Some(valuation.min(cash_above_reserve(view, player, RESERVE)?))
+        valuation_capped_bid(
+            weighted_score(view, player, space),
+            view,
+            player,
+            space,
+            RESERVE,
+        )
     }
 
     fn decide_trade(&mut self, view: &GameView, player: usize) -> Option<TradeOffer> {
@@ -99,7 +89,7 @@ impl Strategy for BuyShrewd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::Board;
+    use crate::board::{Board, SpaceKind};
     use crate::rules::RuleSet;
     use crate::state::GameState;
 

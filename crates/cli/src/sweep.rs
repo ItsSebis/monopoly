@@ -23,8 +23,8 @@ use crate::load_config;
 /// one seat each, every sweep run.
 const PANEL: [&str; 5] = ["buy_all", "buy_good", "buy_bad", "buy_none", "buy_shrewd"];
 
-/// Reserve values the top stage-1 combo (and the overall winner, pooled
-/// across every ruleset) is refined over.
+/// Reserve values the top stage-1 combo (and the overall winner) is refined
+/// over — see `refinement_variants`.
 const REFINE_RESERVES: [i64; 5] = [50, 100, 150, 200, 300];
 
 const SWEEP_RULESETS: [&str; 4] = [
@@ -105,7 +105,7 @@ pub fn sweep(
     // rulesets' completion rates differ by an order of magnitude, so a raw
     // pooled win rate would just be dominated by whichever ruleset happens
     // to produce winners most often, rather than reflecting genuine
-    // relative strength) — the deciding comparison for what `BuyOptimal`
+    // relative strength) — the deciding comparison for what `buy_optimal`
     // actually hardcodes.
     let (final_params, refine_table) =
         refine_by_rank(&winning_axis_combo, &rulesets, games_per_matchup, seed);
@@ -125,7 +125,8 @@ pub fn sweep(
 }
 
 /// Stage 1 (24 combos, ranked) plus the reserve/valuation refinement of this
-/// ruleset's own top combo — see the module doc comment's step list.
+/// ruleset's own top combo — see `docs/strategy-search-results.md`'s Method
+/// section for the full step-by-step description this implements.
 fn sweep_one_ruleset(
     name: &str,
     rules: &RuleSet,
@@ -142,24 +143,13 @@ fn sweep_one_ruleset(
     stage1_sorted.sort_by(|a, b| b.win_rate.total_cmp(&a.win_rate));
     let top_combo = stage1_sorted[0].params;
 
-    let mut refine = Vec::with_capacity(REFINE_RESERVES.len() + 1);
-    for &reserve in &REFINE_RESERVES {
-        let params = ConfigurableParams {
-            reserve,
-            ..top_combo
-        };
-        refine.push(score_combo(rules, &params, seed, games_per_matchup));
-    }
-    let rent_to_price_variant = ConfigurableParams {
-        valuation: Valuation::RentToPrice,
-        ..top_combo
-    };
-    refine.push(score_combo(
-        rules,
-        &rent_to_price_variant,
-        seed,
-        games_per_matchup,
-    ));
+    // `refinement_variants` already excludes whichever reserve equals
+    // `top_combo`'s own (it's already in `stage1` above) — no duplicate row
+    // for the CSV this builds.
+    let refine: Vec<SweepRow> = refinement_variants(&top_combo)
+        .iter()
+        .map(|params| score_combo(rules, params, seed, games_per_matchup))
+        .collect();
 
     let mut ranked: Vec<SweepRow> = stage1.iter().cloned().chain(refine).collect();
     ranked.sort_by(|a, b| b.win_rate.total_cmp(&a.win_rate));
@@ -215,6 +205,25 @@ fn stage_one_combos() -> Vec<ConfigurableParams> {
     combos
 }
 
+/// Every reserve in `REFINE_RESERVES` combined with `combo`'s other axes
+/// (skipping whichever equals `combo`'s own reserve, since that candidate is
+/// just `combo` itself and already scored wherever the caller got `combo`
+/// from), plus a `Valuation::RentToPrice` variant at `combo`'s own reserve.
+/// Shared by `sweep_one_ruleset` (refining a ruleset's local top combo) and
+/// `refine_by_rank` (refining the overall winner).
+fn refinement_variants(combo: &ConfigurableParams) -> Vec<ConfigurableParams> {
+    let mut variants: Vec<ConfigurableParams> = REFINE_RESERVES
+        .iter()
+        .filter(|&&reserve| reserve != combo.reserve)
+        .map(|&reserve| ConfigurableParams { reserve, ..*combo })
+        .collect();
+    variants.push(ConfigurableParams {
+        valuation: Valuation::RentToPrice,
+        ..*combo
+    });
+    variants
+}
+
 fn score_combo(
     rules: &RuleSet,
     params: &ConfigurableParams,
@@ -244,7 +253,7 @@ fn run_one_combo(
         "cfg:{}",
         serde_json::to_string(params).expect("ConfigurableParams always serializes")
     );
-    let games_per_rotation = (games_per_matchup as usize / PANEL.len().saturating_add(1)).max(1);
+    let games_per_rotation = (games_per_matchup as usize / (PANEL.len() + 1)).max(1);
 
     let mut total_wins = 0usize;
     let mut total_games = 0usize;
@@ -280,41 +289,68 @@ fn run_one_combo(
     (total_wins as f64 / total_games.max(1) as f64, total_games)
 }
 
-/// One row of the cross-ruleset mean-rank table: `combo`'s 1-based rank
-/// within each ruleset's own stage-1 (24-combo) ranking, and the mean of
-/// those 4 ranks.
+/// Competition ranking (1 = best/highest `win_rate`; ties share a rank, and
+/// the next distinct value's rank skips accordingly — e.g. two combos tied
+/// for 2nd both get rank 2, and the next-best gets rank 4, not 3). Plain
+/// ordinal (stable-sort-position) ranking would instead assign ties
+/// arbitrarily different ranks based purely on list order, which is a real
+/// bias here: several axis values produce identical games on shared seeds
+/// (e.g. `JailPolicy::HotelRisk` and `PayIfAffordable` agree whenever no
+/// opponent has built a monopoly yet), so ties are common, not an edge case.
+fn competition_rank(win_rate: f64, all_win_rates: &[f64]) -> usize {
+    1 + all_win_rates.iter().filter(|&&wr| wr > win_rate).count()
+}
+
+/// One row of the cross-ruleset mean-rank table: `combo`'s competition rank
+/// (see `competition_rank`) within each ruleset's own stage-1 (24-combo)
+/// ranking, and the mean of those 4 ranks.
 struct RankRow {
     combo: ConfigurableParams,
-    ranks: Vec<(String, usize, f64)>, // (ruleset name, rank, win_rate)
+    /// `ranks[i]`/`win_rates[i]` are ruleset `i`'s rank/win rate for `combo`
+    /// — aligned with whatever list of rulesets/outcomes produced this row,
+    /// not stored redundantly per entry.
+    ranks: Vec<usize>,
+    win_rates: Vec<f64>,
     mean_rank: f64,
 }
 
-/// Ranks the 24 stage-1 combos within each ruleset (1 = best), then picks
-/// the combo with the best (lowest) mean rank across all 4 rulesets — tied
-/// broken by mean win rate — as the overall winner. Returns that combo
-/// alongside the full rank table (for the summary doc).
+impl RankRow {
+    fn mean_win_rate(&self) -> f64 {
+        self.win_rates.iter().sum::<f64>() / self.win_rates.len() as f64
+    }
+}
+
+/// Ranks the 24 stage-1 combos within each ruleset (competition ranking, see
+/// `competition_rank`), then picks the combo with the best (lowest) mean
+/// rank across all 4 rulesets — tied broken by mean win rate — as the
+/// overall winner. Returns that combo alongside the full rank table (for
+/// the summary doc).
 fn pick_overall_winner_by_mean_rank(
     outcomes: &[RulesetOutcome],
 ) -> (ConfigurableParams, Vec<RankRow>) {
     let combos = stage_one_combos();
-    let mut table = Vec::with_capacity(combos.len());
+    // Each ruleset's stage-1 win rates, indexed the same way `combos` is
+    // (both built from the same `stage_one_combos()` order) — computed once
+    // per ruleset rather than re-sorted/re-searched once per combo below.
+    let win_rates_by_ruleset: Vec<Vec<f64>> = outcomes
+        .iter()
+        .map(|o| o.stage1.iter().map(|row| row.win_rate).collect())
+        .collect();
 
-    for combo in &combos {
+    let mut table = Vec::with_capacity(combos.len());
+    for (i, &combo) in combos.iter().enumerate() {
         let mut ranks = Vec::with_capacity(outcomes.len());
-        for outcome in outcomes {
-            let mut sorted = outcome.stage1.clone();
-            sorted.sort_by(|a, b| b.win_rate.total_cmp(&a.win_rate));
-            let (rank, row) = sorted
-                .iter()
-                .enumerate()
-                .find(|(_, row)| row.params == *combo)
-                .expect("every stage-1 combo appears in every ruleset's stage1 list");
-            ranks.push((outcome.name.clone(), rank + 1, row.win_rate));
+        let mut win_rates = Vec::with_capacity(outcomes.len());
+        for win_rates_for_ruleset in &win_rates_by_ruleset {
+            let win_rate = win_rates_for_ruleset[i];
+            ranks.push(competition_rank(win_rate, win_rates_for_ruleset));
+            win_rates.push(win_rate);
         }
-        let mean_rank = ranks.iter().map(|&(_, r, _)| r as f64).sum::<f64>() / ranks.len() as f64;
+        let mean_rank = ranks.iter().sum::<usize>() as f64 / ranks.len() as f64;
         table.push(RankRow {
-            combo: *combo,
+            combo,
             ranks,
+            win_rates,
             mean_rank,
         });
     }
@@ -322,28 +358,25 @@ fn pick_overall_winner_by_mean_rank(
     table.sort_by(|a, b| {
         a.mean_rank
             .total_cmp(&b.mean_rank)
-            .then_with(|| mean_win_rate(b).total_cmp(&mean_win_rate(a)))
+            .then_with(|| b.mean_win_rate().total_cmp(&a.mean_win_rate()))
     });
     let winner = table[0].combo;
     (winner, table)
-}
-
-fn mean_win_rate(row: &RankRow) -> f64 {
-    row.ranks.iter().map(|&(_, _, wr)| wr).sum::<f64>() / row.ranks.len() as f64
 }
 
 /// One reserve/valuation candidate's result in the final refinement pass:
 /// its win rate in every ruleset, plus its rank-based summary across them.
 struct RefineCandidate {
     params: ConfigurableParams,
-    /// (ruleset name, win rate, games) — one entry per ruleset.
-    per_ruleset: Vec<(String, f64, usize)>,
+    /// Win rate per ruleset, aligned with whatever `rulesets` list
+    /// `refine_by_rank` was called with.
+    win_rates: Vec<f64>,
     mean_rank: f64,
     mean_win_rate: f64,
 }
 
-/// Refines `combo`'s reserve (the same `REFINE_RESERVES` sweep as
-/// `sweep_one_ruleset`) plus a `Valuation::RentToPrice` variant, one last
+/// Refines `combo`'s reserve/valuation (`refinement_variants`, plus `combo`
+/// itself as the baseline every variant has to actually beat) one last
 /// time — but by *rank within each ruleset*, not a single win rate pooled
 /// across all 4. The 4 rulesets' completion rates span nearly an order of
 /// magnitude (trading roughly triples how often any game produces a winner
@@ -353,54 +386,46 @@ struct RefineCandidate {
 /// dominate the comparison; ranking within each ruleset first and averaging
 /// the ranks treats all 4 environments as equally informative regardless of
 /// how often they resolve. Returns the winning `ConfigurableParams` (what
-/// `BuyOptimal` hardcodes) and the full candidate list for the summary.
+/// `buy_optimal` hardcodes) and the full candidate list for the summary.
 fn refine_by_rank(
     combo: &ConfigurableParams,
     rulesets: &[(String, RuleSet)],
     games_per_matchup: u32,
     seed: u64,
 ) -> (ConfigurableParams, Vec<RefineCandidate>) {
-    let mut candidates: Vec<ConfigurableParams> = REFINE_RESERVES
-        .iter()
-        .map(|&reserve| ConfigurableParams { reserve, ..*combo })
-        .collect();
-    candidates.push(ConfigurableParams {
-        valuation: Valuation::RentToPrice,
-        ..*combo
-    });
+    let mut candidates = refinement_variants(combo);
+    candidates.push(*combo);
 
-    // results[i][j] = (win_rate, games) for candidate i in ruleset j.
-    let results: Vec<Vec<(f64, usize)>> = candidates
+    // results[i][j] = ruleset j's SweepRow for candidate i.
+    let results: Vec<Vec<SweepRow>> = candidates
         .iter()
         .map(|params| {
             rulesets
                 .iter()
-                .map(|(_, rules)| run_one_combo(rules, params, seed, games_per_matchup))
+                .map(|(_, rules)| score_combo(rules, params, seed, games_per_matchup))
                 .collect()
         })
+        .collect();
+    // Each ruleset's win rates across every candidate, computed once (not
+    // once per candidate) — same approach as `pick_overall_winner_by_mean_rank`.
+    let win_rates_by_ruleset: Vec<Vec<f64>> = (0..rulesets.len())
+        .map(|j| results.iter().map(|row| row[j].win_rate).collect())
         .collect();
 
     let mut ranked = Vec::with_capacity(candidates.len());
     for (i, &params) in candidates.iter().enumerate() {
-        let mut per_ruleset = Vec::with_capacity(rulesets.len());
+        let mut win_rates = Vec::with_capacity(rulesets.len());
         let mut ranks = Vec::with_capacity(rulesets.len());
-        for (j, (name, _)) in rulesets.iter().enumerate() {
-            let (win_rate, games) = results[i][j];
-            per_ruleset.push((name.clone(), win_rate, games));
-            // 1-based rank among this refinement's own candidates, within
-            // this one ruleset; ties (same win rate) share a rank.
-            let rank = 1
-                + (0..candidates.len())
-                    .filter(|&k| results[k][j].0 > win_rate)
-                    .count();
-            ranks.push(rank);
+        for win_rates_for_ruleset in &win_rates_by_ruleset {
+            let win_rate = win_rates_for_ruleset[i];
+            ranks.push(competition_rank(win_rate, win_rates_for_ruleset));
+            win_rates.push(win_rate);
         }
         let mean_rank = ranks.iter().sum::<usize>() as f64 / ranks.len() as f64;
-        let mean_win_rate =
-            per_ruleset.iter().map(|&(_, wr, _)| wr).sum::<f64>() / per_ruleset.len() as f64;
+        let mean_win_rate = win_rates.iter().sum::<f64>() / win_rates.len() as f64;
         ranked.push(RefineCandidate {
             params,
-            per_ruleset,
+            win_rates,
             mean_rank,
             mean_win_rate,
         });
@@ -476,7 +501,7 @@ fn write_summary(
     out.push('\n');
     for row in rank_table.iter().take(5) {
         out.push_str(&format!("| {:.2} | `{:?}` | ", row.mean_rank, row.combo));
-        for &(_, rank, wr) in &row.ranks {
+        for (&rank, &wr) in row.ranks.iter().zip(&row.win_rates) {
             out.push_str(&format!("{rank} ({:.1}%) | ", wr * 100.0));
         }
         out.push('\n');
@@ -502,7 +527,7 @@ fn write_summary(
             row.mean_rank,
             row.mean_win_rate * 100.0
         ));
-        for &(_, wr, _) in &row.per_ruleset {
+        for &wr in &row.win_rates {
             out.push_str(&format!("{:.1}% | ", wr * 100.0));
         }
         out.push('\n');

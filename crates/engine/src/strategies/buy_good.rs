@@ -1,7 +1,6 @@
 use super::{
-    accept_trade, build_within_reserve, cash_above_reserve, patient_jail_action,
-    propose_monopoly_completing_trade, raise_cash_cheapest_first, rent_to_price_score,
-    RATIO_THRESHOLD,
+    accept_trade, build_within_reserve, patient_jail_action, propose_monopoly_completing_trade,
+    raise_cash_cheapest_first, rent_to_price_score, valuation_capped_bid, RATIO_THRESHOLD,
 };
 use crate::state::GameView;
 use crate::strategy::{
@@ -45,10 +44,13 @@ impl Strategy for BuyGood {
     /// purchases — capped by what it can spare above its reserve, and only on
     /// spaces it would have bought outright.
     fn decide_auction_bid(&mut self, view: &GameView, player: usize, space: usize) -> Option<u32> {
-        let score = rent_to_price_score(view, player, space).filter(|&s| s >= RATIO_THRESHOLD)?;
-        let price = view.board.space(space).price()?;
-        let valuation = (price as f64 * (1.0 + score)) as u32;
-        Some(valuation.min(cash_above_reserve(view, player, RESERVE)?))
+        valuation_capped_bid(
+            rent_to_price_score(view, player, space),
+            view,
+            player,
+            space,
+            RESERVE,
+        )
     }
 
     fn decide_trade(&mut self, view: &GameView, player: usize) -> Option<TradeOffer> {

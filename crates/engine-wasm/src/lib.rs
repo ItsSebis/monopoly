@@ -61,12 +61,13 @@ pub fn strategy_ids() -> String {
     serde_json::to_string(monopoly_engine::STRATEGY_IDS).expect("strategy ids always serialize")
 }
 
-/// The same fallback turn cap `Game::run_to_completion` applies when
+/// The same fallback turn cap `Game::turn_cap`/`run_to_completion` apply when
 /// `RuleSet.max_turns` isn't set. `step_turn` itself enforces no cap at all
 /// (see its doc comment) — the browser's live-playback loop needs this to
-/// stop a game exactly the way every other caller does, since driving the
-/// game one turn at a time is the one path that doesn't go through
-/// `run_to_completion`.
+/// stop a game exactly the way every other caller does, since it drives the
+/// game one turn at a time rather than through `run_to_completion` (as does
+/// the interactive server's per-session thread, natively, via
+/// `Game::turn_cap` directly).
 #[wasm_bindgen]
 pub fn safety_max_turns() -> u32 {
     monopoly_engine::SAFETY_MAX_TURNS

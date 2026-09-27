@@ -302,6 +302,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
 
         for offer in purchase_offers() {
@@ -334,6 +335,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &auction_state,
+            log_since_turn_start: &[],
         };
         assert_eq!(
             Configurable(BUY_ALL_PARAMS).decide_auction_bid(&auction_view, 0, 16),
@@ -355,6 +357,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
 
         for offer in purchase_offers() {
@@ -396,6 +399,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
 
         for offer in purchase_offers() {
@@ -418,6 +422,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &built_up_state,
+            log_since_turn_start: &[],
         };
         assert_eq!(
             Configurable(buy_shrewd_params).decide_build(&built_up_view, 0),
@@ -445,6 +450,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &opponent_built_state,
+            log_since_turn_start: &[],
         };
         assert_eq!(
             Configurable(buy_shrewd_params).decide_jail_action(&opponent_built_view, 0),

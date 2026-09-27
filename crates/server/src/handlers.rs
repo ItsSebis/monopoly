@@ -31,7 +31,7 @@ use crate::state::AppState;
 /// axum's default plain-text rejection body, so a malformed/missing-header
 /// request body still gets `docs/api.md`'s `{ "error": "message" }` envelope
 /// (with 400, not axum's default 415/422) instead of a bare-text response.
-struct AppJson<T>(T);
+pub(crate) struct AppJson<T>(pub(crate) T);
 
 #[async_trait]
 impl<S, T> FromRequest<S> for AppJson<T>
@@ -59,6 +59,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/runs/batch", post(create_batch_run))
         .route("/runs/:id", get(get_run).delete(delete_run))
         .route("/runs/:id/games/:seed", get(replay_game))
+        .merge(crate::interactive::routes::router())
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

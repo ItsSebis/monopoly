@@ -1,5 +1,6 @@
 use crate::board::{Board, ColorGroup, BOARD_SIZE, RAILROAD_SPACES, UTILITY_SPACES};
 use crate::cards::DeckKind;
+use crate::events::EventEnvelope;
 use crate::rules::RuleSet;
 use serde::Serialize;
 
@@ -73,7 +74,9 @@ pub struct GameState {
 }
 
 impl GameState {
-    pub(crate) fn new(rules: &RuleSet, names: &[String]) -> Self {
+    /// The turn-0 state for a fresh game under `rules`, one `PlayerState` per
+    /// name in `names`, in order.
+    pub fn new(rules: &RuleSet, names: &[String]) -> Self {
         GameState {
             turn: 0,
             current_player: 0,
@@ -99,6 +102,14 @@ pub struct GameView<'a> {
     pub board: &'a Board,
     pub rules: &'a RuleSet,
     pub state: &'a GameState,
+    /// Every event recorded so far in the turn currently being resolved
+    /// (empty at the very start of a turn, growing as dice are rolled,
+    /// landings resolved, and so on) — lets a `Strategy` asked a decision
+    /// partway through a turn see what already happened this turn without
+    /// waiting for `Game::step_turn` to return. Events from earlier turns
+    /// aren't included; a caller wanting those already received them from an
+    /// earlier `step_turn` call.
+    pub log_since_turn_start: &'a [EventEnvelope],
 }
 
 impl GameView<'_> {

@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 monopoly-engine = { path = "../engine" }
 axum = "0.7"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
 tower-http = { version = "0.5", features = ["cors"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 ulid = "1"

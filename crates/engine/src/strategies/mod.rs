@@ -2,13 +2,19 @@ mod buy_all;
 mod buy_bad;
 mod buy_good;
 mod buy_none;
+mod buy_optimal;
 mod buy_shrewd;
+mod configurable;
 
 pub use buy_all::BuyAll;
 pub use buy_bad::BuyBad;
 pub use buy_good::BuyGood;
 pub use buy_none::BuyNone;
 pub use buy_shrewd::BuyShrewd;
+pub use configurable::{
+    AuctionPolicy, BuildPolicy, Configurable, ConfigurableParams, JailPolicy, TradePolicy,
+    Valuation,
+};
 
 use crate::board::{ColorGroup, SpaceKind, BOARD_SIZE};
 use crate::building::can_build;
@@ -19,7 +25,14 @@ use crate::strategy::{BuildAction, JailAction, MortgageAction, Strategy, TradeOf
 /// them — the one source of truth for anything that needs to list them (e.g.
 /// the browser's strategy dropdown in Phase 5), instead of a hand-maintained
 /// duplicate.
-pub const STRATEGY_IDS: &[&str] = &["buy_all", "buy_good", "buy_bad", "buy_none", "buy_shrewd"];
+pub const STRATEGY_IDS: &[&str] = &[
+    "buy_all",
+    "buy_good",
+    "buy_bad",
+    "buy_none",
+    "buy_shrewd",
+    "buy_optimal",
+];
 
 /// Construct a built-in strategy by its registered id (used by config files
 /// and the CLI). `None` for an unrecognized id, so callers can report a
@@ -31,7 +44,24 @@ pub fn make_strategy(id: &str) -> Option<Box<dyn Strategy>> {
         "buy_bad" => Some(Box::new(BuyBad)),
         "buy_none" => Some(Box::new(BuyNone)),
         "buy_shrewd" => Some(Box::new(BuyShrewd)),
-        _ => None,
+        "buy_optimal" => Some(Box::new(Configurable(buy_optimal::PARAMS))),
+        _ => {
+            if let Some(json) = id.strip_prefix("cfg:") {
+                let params: ConfigurableParams = serde_json::from_str(json).ok()?;
+                // A negative reserve would make `cash_above_reserve`'s
+                // `cash - reserve` subtraction (and every caller downstream
+                // of it) meaningless, so reject it here rather than let a
+                // malformed but syntactically-valid `cfg:` id (this is
+                // reachable from untrusted input — e.g. a server replaying a
+                // stored `PlayerConfig`) silently do something nonsensical.
+                if params.reserve < 0 {
+                    return None;
+                }
+                Some(Box::new(Configurable(params)))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -44,6 +74,42 @@ fn patient_jail_action(view: &GameView, player: usize) -> JailAction {
         .any(|group| view.owns_full_group(player, group));
 
     if holds_a_monopoly && view.player(player).cash >= view.rules.jail_fine as i64 {
+        JailAction::PayFine
+    } else {
+        JailAction::RollForDoubles
+    }
+}
+
+/// Jail logic shared by Buy All and any `Configurable` using
+/// `JailPolicy::PayIfAffordable`: pay the fine immediately whenever cash
+/// allows, regardless of monopoly status — the simplest possible policy,
+/// with no phase-dependence at all (contrast `patient_jail_action` and
+/// `hotel_risk_jail_action`, both of which condition on monopoly state).
+fn affordable_jail_action(view: &GameView, player: usize) -> JailAction {
+    if view.player(player).cash >= view.rules.jail_fine as i64 {
+        JailAction::PayFine
+    } else {
+        JailAction::RollForDoubles
+    }
+}
+
+/// Phase-dependent jail policy keyed on *opponents'* hotel risk, not the
+/// acting player's own monopolies (unlike `patient_jail_action`): leave fast
+/// while no opponent has a built-up monopoly yet (the board is still open,
+/// nothing dangerous to land on), stay once one does (avoiding the risk of
+/// landing on it, at the cost of a slower re-roll) — see
+/// docs/player-strategies.md's Jail section. Shared by Buy Shrewd and any
+/// `Configurable` using `JailPolicy::HotelRisk`.
+fn hotel_risk_jail_action(view: &GameView, player: usize) -> JailAction {
+    let opponent_has_a_built_monopoly = (0..view.state.players.len())
+        .filter(|&p| p != player && !view.state.players[p].bankrupt)
+        .any(|p| {
+            ColorGroup::ALL.into_iter().any(|group| {
+                view.owns_full_group(p, group)
+                    && view.group_house_counts(group).iter().any(|&h| h > 0)
+            })
+        });
+    if !opponent_has_a_built_monopoly && view.player(player).cash >= view.rules.jail_fine as i64 {
         JailAction::PayFine
     } else {
         JailAction::RollForDoubles
@@ -89,12 +155,89 @@ fn rent_to_price_score(view: &GameView, player: usize, space: usize) -> Option<f
     }
 }
 
+/// A static per-group landing-frequency multiplier, from the Markov-chain
+/// research cited in docs/player-strategies.md: Jail itself is the
+/// single most-landed-on space, and the Orange/Red groups just past it
+/// inherit that traffic (Orange the most, Red close behind) — a gap
+/// docs/player-strategies.md's Buy Good section records as considered and
+/// skipped there. Every other group is unweighted; this is a multiplier on
+/// top of the shared rent-to-price-plus-monopoly-bonus score, not a
+/// replacement for it.
+fn landing_weight(group: ColorGroup) -> f64 {
+    match group {
+        ColorGroup::Orange => 1.3,
+        ColorGroup::Red => 1.15,
+        _ => 1.0,
+    }
+}
+
+/// The shared `rent_to_price_score`, multiplied by `landing_weight` — and
+/// still judged against the same `RATIO_THRESHOLD` as the plain score, since
+/// the weighting, not the bar, is what differs. Railroads and utilities
+/// belong to no color group, so they keep the shared score unchanged. Shared
+/// by Buy Shrewd and any `Configurable` using `Valuation::Weighted`.
+fn weighted_score(view: &GameView, player: usize, space: usize) -> Option<f64> {
+    let base = rent_to_price_score(view, player, space)?;
+    match view.board.space(space) {
+        SpaceKind::Street { group, .. } => Some(base * landing_weight(group)),
+        _ => Some(base),
+    }
+}
+
 /// How much `player` can commit beyond `reserve` — the ceiling every bidding
 /// strategy caps its auction bid at. `None` when already at or below the
 /// reserve, which is also how a strategy abstains from the auction.
+/// `saturating_sub` rather than plain subtraction: `reserve` ultimately
+/// comes from `ConfigurableParams` (reachable from untrusted input via a
+/// `cfg:` strategy id — see `make_strategy`), so this stays panic-free even
+/// if a validation gap elsewhere ever lets an extreme value through.
 fn cash_above_reserve(view: &GameView, player: usize, reserve: i64) -> Option<u32> {
-    let spare = view.player(player).cash - reserve;
+    let spare = view.player(player).cash.saturating_sub(reserve);
     (spare > 0).then_some(spare as u32)
+}
+
+/// Whether a single other player already owns every other member of
+/// `space`'s color group — the trigger for a denial bid (see
+/// `cash_above_reserve`'s use at each call site): bidding up to full
+/// affordability purely to block that player's monopoly, independent of
+/// `space`'s own valuation. `false` for a non-street space (railroads/
+/// utilities have no single "group" to complete this way). Shared by Buy
+/// Shrewd and any `Configurable` using `AuctionPolicy::ValuationCappedWithDenial`.
+fn denial_bid_applies(view: &GameView, player: usize, space: usize) -> bool {
+    let SpaceKind::Street { group, .. } = view.board.space(space) else {
+        return false;
+    };
+    let other_members: Vec<usize> = view
+        .board
+        .group_members(group)
+        .filter(|&m| m != space)
+        .collect();
+    let Some(sole_owner) = other_members.first().and_then(|&m| view.owner_of(m)) else {
+        return false;
+    };
+    sole_owner != player
+        && other_members
+            .iter()
+            .all(|&m| view.owner_of(m) == Some(sole_owner))
+}
+
+/// A bid at `price * (1 + score)`, capped by what `player` can spare above
+/// `reserve` — `None` (abstain) if `score` (the caller's own valuation of
+/// `space`, already computed by whichever `Valuation` function it uses) is
+/// below `RATIO_THRESHOLD`, `space` has no price, or there's no cash above
+/// `reserve` to bid. Shared by Buy Good, Buy Shrewd's non-denial fallback,
+/// and any `Configurable`'s `AuctionPolicy`.
+fn valuation_capped_bid(
+    score: Option<f64>,
+    view: &GameView,
+    player: usize,
+    space: usize,
+    reserve: i64,
+) -> Option<u32> {
+    let score = score.filter(|&s| s >= RATIO_THRESHOLD)?;
+    let price = view.board.space(space).price()?;
+    let valuation = (price as f64 * (1.0 + score)) as u32;
+    Some(valuation.min(cash_above_reserve(view, player, reserve)?))
 }
 
 /// Building logic shared by Buy All, Buy Good, and Buy Shrewd (see

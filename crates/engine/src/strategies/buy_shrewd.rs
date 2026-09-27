@@ -1,8 +1,8 @@
 use super::{
-    accept_trade, build_within_reserve, cash_above_reserve, propose_monopoly_completing_trade,
-    raise_cash_cheapest_first, rent_to_price_score, RATIO_THRESHOLD,
+    accept_trade, build_within_reserve, cash_above_reserve, denial_bid_applies,
+    hotel_risk_jail_action, propose_monopoly_completing_trade, raise_cash_cheapest_first,
+    valuation_capped_bid, weighted_score, RATIO_THRESHOLD,
 };
-use crate::board::{ColorGroup, SpaceKind};
 use crate::state::GameView;
 use crate::strategy::{
     BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy, TradeOffer,
@@ -12,56 +12,6 @@ use crate::strategy::{
 /// and Buy Good's $150, matching this strategy's overall "more deliberate
 /// than Buy All, more aggressive than Buy Good" character.
 const RESERVE: i64 = 100;
-
-/// A static per-group landing-frequency multiplier, from the Markov-chain
-/// research cited in docs/player-strategies.md: Jail itself is the
-/// single most-landed-on space, and the Orange/Red groups just past it
-/// inherit that traffic (Orange the most, Red close behind) — the gap this
-/// strategy exists to cover, which docs/player-strategies.md's Buy Good
-/// section records as considered and skipped there. Every other group is
-/// unweighted; this is a multiplier on top of the shared
-/// rent-to-price-plus-monopoly-bonus score, not a replacement for it.
-fn landing_weight(group: ColorGroup) -> f64 {
-    match group {
-        ColorGroup::Orange => 1.3,
-        ColorGroup::Red => 1.15,
-        _ => 1.0,
-    }
-}
-
-/// The shared `rent_to_price_score`, multiplied by `landing_weight` — and
-/// still judged against the same `RATIO_THRESHOLD` Buy Good uses, since the
-/// weighting, not the bar, is what differs. Railroads and utilities belong
-/// to no color group, so they keep the shared score unchanged.
-fn weighted_score(view: &GameView, player: usize, space: usize) -> Option<f64> {
-    let base = rent_to_price_score(view, player, space)?;
-    match view.board.space(space) {
-        SpaceKind::Street { group, .. } => Some(base * landing_weight(group)),
-        _ => Some(base),
-    }
-}
-
-/// Phase-dependent jail policy keyed on *opponents'* hotel risk, not the
-/// acting player's own monopolies (unlike `patient_jail_action`, which Buy
-/// Good/Buy None use): leave fast while no opponent has a built-up monopoly
-/// yet (the board is still open, nothing dangerous to land on), stay once
-/// one does (avoiding the risk of landing on it, at the cost of a slower
-/// re-roll) — see docs/player-strategies.md's Jail section.
-fn hotel_risk_jail_action(view: &GameView, player: usize) -> JailAction {
-    let opponent_has_a_built_monopoly = (0..view.state.players.len())
-        .filter(|&p| p != player && !view.state.players[p].bankrupt)
-        .any(|p| {
-            ColorGroup::ALL.into_iter().any(|group| {
-                view.owns_full_group(p, group)
-                    && view.group_house_counts(group).iter().any(|&h| h > 0)
-            })
-        });
-    if !opponent_has_a_built_monopoly && view.player(player).cash >= view.rules.jail_fine as i64 {
-        JailAction::PayFine
-    } else {
-        JailAction::RollForDoubles
-    }
-}
 
 /// Combines every gap docs/player-strategies.md's "where the built-ins
 /// diverge from this" section names into one strategy, rather than four
@@ -110,26 +60,16 @@ impl Strategy for BuyShrewd {
     /// monopoly. Otherwise bids its own (landing-frequency-weighted)
     /// valuation, the same way Buy Good does.
     fn decide_auction_bid(&mut self, view: &GameView, player: usize, space: usize) -> Option<u32> {
-        if let SpaceKind::Street { group, .. } = view.board.space(space) {
-            let other_members: Vec<usize> = view
-                .board
-                .group_members(group)
-                .filter(|&m| m != space)
-                .collect();
-            if let Some(sole_owner) = other_members.first().and_then(|&m| view.owner_of(m)) {
-                let one_player_holds_the_rest = sole_owner != player
-                    && other_members
-                        .iter()
-                        .all(|&m| view.owner_of(m) == Some(sole_owner));
-                if one_player_holds_the_rest {
-                    return cash_above_reserve(view, player, RESERVE);
-                }
-            }
+        if denial_bid_applies(view, player, space) {
+            return cash_above_reserve(view, player, RESERVE);
         }
-        let score = weighted_score(view, player, space).filter(|&s| s >= RATIO_THRESHOLD)?;
-        let price = view.board.space(space).price()?;
-        let valuation = (price as f64 * (1.0 + score)) as u32;
-        Some(valuation.min(cash_above_reserve(view, player, RESERVE)?))
+        valuation_capped_bid(
+            weighted_score(view, player, space),
+            view,
+            player,
+            space,
+            RESERVE,
+        )
     }
 
     fn decide_trade(&mut self, view: &GameView, player: usize) -> Option<TradeOffer> {
@@ -149,7 +89,7 @@ impl Strategy for BuyShrewd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::Board;
+    use crate::board::{Board, SpaceKind};
     use crate::rules::RuleSet;
     use crate::state::GameState;
 

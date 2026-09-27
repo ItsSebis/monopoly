@@ -1,0 +1,19 @@
+# Phase 8 strategy search (`monopoly sweep`): sweep_baseline.toml with every
+# house rule on (`free_parking_pot`, `double_go_salary`, `unlimited_houses`)
+# and trading still off, isolating what a cash-richer, build-unconstrained
+# board changes about which behavioral axes win.
+starting_cash = 1500
+go_salary = 200
+jail_fine = 50
+luxury_tax = 75
+even_build_rule = true
+auction_on_decline = true
+free_parking_pot = true
+max_turns = 500
+double_go_salary = true
+unlimited_houses = true
+trading_enabled = false
+
+[income_tax_mode]
+mode = "choice"
+flat_amount = 200

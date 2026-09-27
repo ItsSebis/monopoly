@@ -1,6 +1,6 @@
 use super::{
-    accept_trade, build_within_reserve, cash_above_reserve, propose_monopoly_completing_trade,
-    raise_cash_cheapest_first,
+    accept_trade, affordable_jail_action, build_within_reserve, cash_above_reserve,
+    propose_monopoly_completing_trade, raise_cash_cheapest_first,
 };
 use crate::state::GameView;
 use crate::strategy::{
@@ -23,11 +23,7 @@ impl Strategy for BuyAll {
     }
 
     fn decide_jail_action(&mut self, view: &GameView, player: usize) -> JailAction {
-        if view.player(player).cash >= view.rules.jail_fine as i64 {
-            JailAction::PayFine
-        } else {
-            JailAction::RollForDoubles
-        }
+        affordable_jail_action(view, player)
     }
 
     fn decide_build(&mut self, view: &GameView, player: usize) -> Vec<BuildAction> {

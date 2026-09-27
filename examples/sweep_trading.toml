@@ -1,0 +1,18 @@
+# Phase 8 strategy search (`monopoly sweep`): sweep_baseline.toml with only
+# `trading_enabled` flipped on, isolating what player-initiated trading alone
+# (Phase 7) changes about which behavioral axes win.
+starting_cash = 1500
+go_salary = 200
+jail_fine = 50
+luxury_tax = 75
+even_build_rule = true
+auction_on_decline = true
+free_parking_pot = false
+max_turns = 500
+double_go_salary = false
+unlimited_houses = false
+trading_enabled = true
+
+[income_tax_mode]
+mode = "choice"
+flat_amount = 200

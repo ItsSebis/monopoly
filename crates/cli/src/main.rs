@@ -1,3 +1,5 @@
+mod sweep;
+
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -103,6 +105,27 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Search `Configurable`'s axis space (Phase 8, docs/roadmap.md) for the
+    /// strongest configuration against the 5 named strategies, across the 4
+    /// `examples/sweep_*.toml` ruleset environments.
+    Sweep {
+        /// Directory containing `sweep_baseline.toml`, `sweep_trading.toml`,
+        /// `sweep_house_rules.toml`, and `sweep_maximal.toml`.
+        #[arg(long, default_value = "examples")]
+        rules_dir: PathBuf,
+        /// Total games per candidate configuration per ruleset (split evenly
+        /// across the 6 seat rotations).
+        #[arg(long, default_value_t = 1200)]
+        games_per_matchup: u32,
+        /// Base seed every candidate's rotations are deterministically
+        /// derived from.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Directory the per-ruleset ranked CSVs and `summary.md` are
+        /// written to.
+        #[arg(long, default_value = "sweep_results")]
+        out_dir: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -135,6 +158,15 @@ fn main() -> ExitCode {
             rules,
             out,
         } => tournament(strategies, games, seed, rules.as_deref(), out.as_deref()),
+        Command::Sweep {
+            rules_dir,
+            games_per_matchup,
+            seed,
+            out_dir,
+        } => match sweep::sweep(&rules_dir, games_per_matchup, seed, &out_dir) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(&e),
+        },
     }
 }
 

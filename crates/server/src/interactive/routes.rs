@@ -8,7 +8,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use monopoly_engine::{EventEnvelope, GameResult, PlayerConfig, RuleSet};
+use monopoly_engine::state::GameState;
+use monopoly_engine::{EventEnvelope, PlayerConfig, RuleSet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
@@ -16,9 +17,8 @@ use crate::handlers::AppJson;
 use crate::ids::new_session_id;
 use crate::interactive::board::{board_dto, BoardSpaceDto};
 use crate::interactive::decision::{DecisionAnswer, PendingDecision};
-use crate::interactive::session::{spawn_session, SessionHandle, SubmitError};
+use crate::interactive::session::{spawn_session, GameOver, SessionHandle, SubmitError};
 use crate::state::AppState;
-use monopoly_engine::state::GameState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -50,29 +50,24 @@ struct SessionSnapshot {
     pending: Option<PendingDecision>,
     events: Vec<EventEnvelope>,
     seq: u64,
-    game_over: Option<GameResult>,
+    game_over: Option<GameOver>,
     errored: Option<String>,
 }
 
-fn snapshot(
-    id: &str,
-    human_seat: usize,
-    handle: &SessionHandle,
-    since_seq: u64,
-) -> SessionSnapshot {
-    debug_assert_eq!(id, handle.id);
+/// Builds a snapshot response from `handle`'s current state, `events`
+/// trimmed to `seq > since_seq`. `events` is seq-ordered, so this is a
+/// binary search (`partition_point`) rather than a linear scan — matters
+/// once a session's full log runs into the thousands of events over a long
+/// game.
+fn snapshot(handle: &SessionHandle, since_seq: u64) -> SessionSnapshot {
     let locked = handle.shared.lock().unwrap();
+    let first_new = locked.events.partition_point(|e| e.seq <= since_seq);
     SessionSnapshot {
-        id: id.to_string(),
-        human_seat,
+        id: handle.id.clone(),
+        human_seat: handle.human_seat,
         state: locked.state.clone(),
         pending: locked.pending.clone(),
-        events: locked
-            .events
-            .iter()
-            .filter(|e| e.seq > since_seq)
-            .cloned()
-            .collect(),
+        events: locked.events[first_new..].to_vec(),
         seq: locked.seq,
         game_over: locked.game_over.clone(),
         errored: locked.errored.clone(),
@@ -93,12 +88,11 @@ async fn create_session(
     State(state): State<AppState>,
     AppJson(req): AppJson<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<SessionSnapshot>), AppError> {
-    if req.players.len() < 2 {
-        return Err(AppError::BadRequest(format!(
-            "need at least 2 players, got {}",
-            req.players.len()
-        )));
-    }
+    // Only `human_seat` is checked here: "at least 2 players" and "every
+    // non-human strategy id is recognized" are both already enforced by
+    // `Game::with_strategies`'s own `ConfigError` (via `spawn_session`),
+    // which maps to the same 400 either way — no need for a second copy of
+    // either check up here.
     if req.human_seat >= req.players.len() {
         return Err(AppError::BadRequest(format!(
             "human_seat {} is out of range for {} players",
@@ -110,7 +104,7 @@ async fn create_session(
     let seed = req.seed.unwrap_or_else(rand::random);
     let handle = spawn_session(id.clone(), req.rules, req.players, req.human_seat, seed)?;
 
-    let snap = snapshot(&id, handle.human_seat, &handle, 0);
+    let snap = snapshot(&handle, 0);
     state.sessions.lock().unwrap().insert(id, handle);
     Ok((StatusCode::CREATED, Json(snap)))
 }
@@ -128,22 +122,26 @@ async fn get_session(
 ) -> Result<Json<SessionSnapshot>, AppError> {
     let handle = lookup(&state, &id)?;
     handle.touch();
-    Ok(Json(snapshot(
-        &id,
-        handle.human_seat,
-        &handle,
-        params.since_seq,
-    )))
+    Ok(Json(snapshot(&handle, params.since_seq)))
 }
 
 async fn submit_decision(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<SinceSeqParams>,
     AppJson(answer): AppJson<DecisionAnswer>,
 ) -> Result<Json<SessionSnapshot>, AppError> {
     let handle = lookup(&state, &id)?;
+    // Defense in depth: the engine itself already treats an out-of-range
+    // board-space index as a safe no-op (`Game::try_build`/`try_mortgage`/
+    // `trade_is_valid`), but rejecting it here with a clear 400 — before it
+    // even reaches the session's channel — is much better API UX than a
+    // silently-ignored action.
+    if let Err(message) = answer.validate() {
+        return Err(AppError::BadRequest(message));
+    }
     match handle.submit_answer(answer) {
-        Ok(()) => Ok(Json(snapshot(&id, handle.human_seat, &handle, 0))),
+        Ok(()) => Ok(Json(snapshot(&handle, params.since_seq))),
         Err(SubmitError::NothingPending) => {
             Err(AppError::Conflict("no decision is pending".to_string()))
         }

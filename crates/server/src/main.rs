@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
-use monopoly_server::interactive::session::SESSION_IDLE_TIMEOUT;
+use monopoly_server::interactive::session::{Sessions, SESSION_IDLE_TIMEOUT};
 use monopoly_server::{build_router, db, AppState};
 
 #[derive(Parser)]
@@ -46,13 +46,9 @@ async fn main() {
 
 /// Periodically drops interactive sessions (Phase 9) that have gone idle
 /// past `SESSION_IDLE_TIMEOUT` — deliberately spawned here rather than inside
-/// `build_router`, so `crates/server/tests/router.rs`'s synchronous `oneshot`
-/// tests (which never enter the tokio runtime's timer) aren't affected by it.
-fn spawn_session_reaper(
-    sessions: Arc<
-        Mutex<HashMap<String, Arc<monopoly_server::interactive::session::SessionHandle>>>,
-    >,
-) {
+/// `build_router`, simply to keep `build_router` itself free of background
+/// tasks (a router built for a test shouldn't come with one attached).
+fn spawn_session_reaper(sessions: Sessions) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {

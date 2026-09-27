@@ -42,15 +42,17 @@ Server-authoritative human-vs-CPU play: the server holds the live, authoritative
 
 ### `POST /sessions`
 
-Body: `{ "rules"?: RuleSet, "players": [PlayerConfig], "human_seat": usize, "seed"?: u64 }`. The human seat's own `PlayerConfig.strategy` is a placeholder (e.g. `"human"`) — ignored by session construction, since that seat is always played by whichever client is polling this session, not a registered strategy id. `rules` defaults like `POST /runs/batch`; `seed` defaults to a fresh random one. 400 if there are fewer than 2 players, `human_seat` is out of range, or a non-human seat's `strategy` id is unrecognized. 201 with a session snapshot: `{ "id", "human_seat", "state", "pending", "events", "seq", "game_over", "errored" }`.
+Body: `{ "rules"?: RuleSet, "players": [PlayerConfig], "human_seat": usize, "seed"?: u64 }`. The human seat's own `PlayerConfig.strategy` is a placeholder (e.g. `"human"`) — ignored by session construction, since that seat is always played by whichever client is polling this session, not a registered strategy id. `rules` defaults like `POST /runs/batch`; `seed` defaults to a fresh random one. 400 if `human_seat` is out of range for `players`, or (via `Game::with_strategies`'s own validation) if there are fewer than 2 players or a non-human seat's `strategy` id is unrecognized. 201 with a session snapshot: `{ "id", "human_seat", "state", "pending", "events", "seq", "game_over", "errored" }`.
+
+`game_over` is `null` until the game ends, then `{ "winner": usize | null, "turns": u32 }` — deliberately not the full `GameResult` the archive endpoints use (its event log and final `GameState` would just duplicate `events`/`state`, which this snapshot already carries).
 
 ### `GET /sessions/{id}?since_seq=<u64>`
 
-Poll a session's current snapshot (same shape as the `POST` response). `events` is filtered to `seq > since_seq` (default 0, i.e. the full log so far). `pending` describes the decision the human seat is currently blocked on (one of the 7 `Strategy` hooks — `docs/simulation-engine.md#the-strategy-trait` — tagged by `kind`), or `null` if the game is between decisions or over. 404 for an unknown `id`.
+Poll a session's current snapshot (same shape as the `POST` responses below). `events` is filtered to `seq > since_seq` (default 0, i.e. the full log so far), including any events from the turn currently in progress — a decision published mid-turn (e.g. a purchase offer right after the roll and move that led to it) is never published without the events that led to it. `pending` describes the decision the human seat is currently blocked on (one of the 7 `Strategy` hooks — `docs/simulation-engine.md#the-strategy-trait` — tagged by `kind`), or `null` if the game is between decisions or over. 404 for an unknown `id`.
 
-### `POST /sessions/{id}/decisions`
+### `POST /sessions/{id}/decisions?since_seq=<u64>`
 
-Answer the currently-pending decision. Body is a `DecisionAnswer`, tagged by the same `kind` as the `pending` it's answering (e.g. `{ "kind": "Purchase", "buy": true }`). 404 unknown `id`; 409 if `kind` doesn't match what's actually pending (or nothing is); 410 if the game has already ended. 200 with a fresh snapshot on success.
+Answer the currently-pending decision. Body is a `DecisionAnswer`, tagged by the same `kind` as the `pending` it's answering (e.g. `{ "kind": "Purchase", "buy": true }`); `since_seq` works exactly as it does for `GET` (default 0) and controls only how much of `events` comes back in this response, not which decision is answered. 400 if a `Build`/`Mortgage`/`TradeProposal` answer names an out-of-range board-space index (the engine itself also treats one as a safe no-op rather than erroring, but this is a clearer response); 404 unknown `id`; 409 if `kind` doesn't match what's actually pending (or nothing is); 410 if the game has already ended. 200 with a fresh snapshot on success.
 
 ### `DELETE /sessions/{id}`
 

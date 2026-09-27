@@ -36,12 +36,9 @@ pub const STRATEGY_IDS: &[&str] = &[
 
 /// Construct a built-in strategy by its registered id (used by config files
 /// and the CLI). `None` for an unrecognized id, so callers can report a
-/// clear config error instead of panicking.
-///
-/// Returns `Box<dyn Strategy + Send>` (widened in Phase 9, type-only): every
-/// built-in strategy here is a plain data struct with no interior mutability,
-/// so each is `Send` automatically — needed so the interactive server can
-/// move a `Game` holding these onto its own dedicated OS thread.
+/// clear config error instead of panicking. Every built-in strategy here is
+/// a plain data struct with no interior mutability, so each is `Send`
+/// automatically.
 pub fn make_strategy(id: &str) -> Option<Box<dyn Strategy + Send>> {
     match id {
         "buy_all" => Some(Box::new(BuyAll)),
@@ -543,6 +540,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
 
         let spare = find_reciprocal_spare(&view, 0, 1, ColorGroup::Brown);
@@ -568,6 +566,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
 
         if let Some(offer) = propose_monopoly_completing_trade(&view, 0) {
@@ -593,6 +592,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
         let offer = TradeOffer {
             to: 0,

@@ -2,10 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::GameView;
 
-/// `Serialize`/`Deserialize` (Phase 9, purely additive): the interactive
-/// server embeds these types directly in its decision/answer JSON
-/// (`crates/server/src/interactive/decision.rs`) instead of hand-duplicating
-/// them.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PurchaseOffer {
     pub space: usize,

@@ -1,60 +1,12 @@
 //! Router tests against an in-memory SQLite connection, via
 //! `tower::ServiceExt::oneshot` — no real network needed.
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
+use common::{app, delete, get, post, send};
 use monopoly_engine::{build_single_run_record, PlayerConfig, RuleSet};
-use monopoly_server::{build_router, db, AppState};
-use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use tower::ServiceExt;
-
-fn app() -> axum::Router {
-    let conn = db::open(":memory:").unwrap();
-    let state = AppState {
-        db: Arc::new(Mutex::new(conn)),
-        sessions: Arc::new(Mutex::new(HashMap::new())),
-    };
-    build_router(state)
-}
-
-async fn send(app: &axum::Router, req: Request<Body>) -> (StatusCode, Value) {
-    let response = app.clone().oneshot(req).await.unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let body = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap()
-    };
-    (status, body)
-}
-
-fn post(path: &str, body: Value) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(path)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap()
-}
-
-fn get(path: &str) -> Request<Body> {
-    Request::builder()
-        .method("GET")
-        .uri(path)
-        .body(Body::empty())
-        .unwrap()
-}
-
-fn delete(path: &str) -> Request<Body> {
-    Request::builder()
-        .method("DELETE")
-        .uri(path)
-        .body(Body::empty())
-        .unwrap()
-}
+use serde_json::json;
 
 #[tokio::test]
 async fn post_runs_batch_then_list_and_fetch_it() {

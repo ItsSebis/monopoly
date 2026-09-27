@@ -106,6 +106,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
         // St. James Place: Orange, space 16.
         let SpaceKind::Street {
@@ -136,6 +137,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
 
         let actions = BuyShrewd.decide_build(&view, 0);
@@ -156,6 +158,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
         assert_eq!(
             BuyShrewd.decide_jail_action(&view, 0),
@@ -170,6 +173,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
         assert_eq!(
             BuyShrewd.decide_jail_action(&view, 0),
@@ -189,6 +193,7 @@ mod tests {
             board: &board,
             rules: &rules,
             state: &state,
+            log_since_turn_start: &[],
         };
 
         // Mediterranean Avenue (space 1) is up for auction: winning it would

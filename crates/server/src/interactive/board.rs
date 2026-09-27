@@ -29,78 +29,56 @@ pub struct BoardSpaceDto {
     pub mortgage_value: Option<u32>,
 }
 
+/// `label` plus the street-only fields (`group`/`base_rent`/`house_rent`/
+/// `house_cost`, all `None` for anything but `SpaceKind::Street`).
+type LabelAndStreetFields = (
+    &'static str,
+    Option<ColorGroup>,
+    Option<u32>,
+    Option<[u32; 5]>,
+    Option<u32>,
+);
+
 fn dto(index: usize, kind: SpaceKind) -> BoardSpaceDto {
-    let blank = BoardSpaceDto {
-        index,
-        kind: "",
-        group: None,
-        price: None,
-        base_rent: None,
-        house_rent: None,
-        house_cost: None,
-        mortgage_value: None,
-    };
-    match kind {
-        SpaceKind::Go => BoardSpaceDto {
-            kind: "go",
-            ..blank
-        },
+    // `price`/`mortgage_value` apply the same way to every ownable kind
+    // (`SpaceKind::price` already covers Street/Railroad/Utility uniformly),
+    // so they're computed once here rather than per-variant below.
+    let price = kind.price();
+    let mortgage_value = price.map(|p| p / 2);
+    let (label, group, base_rent, house_rent, house_cost): LabelAndStreetFields = match kind {
+        SpaceKind::Go => ("go", None, None, None, None),
         SpaceKind::Street {
             group,
-            price,
             base_rent,
             house_rent,
             house_cost,
-        } => BoardSpaceDto {
-            kind: "street",
-            group: Some(group),
-            price: Some(price),
-            base_rent: Some(base_rent),
-            house_rent: Some(house_rent),
-            house_cost: Some(house_cost),
-            mortgage_value: Some(price / 2),
-            ..blank
-        },
-        SpaceKind::Railroad { price } => BoardSpaceDto {
-            kind: "railroad",
-            price: Some(price),
-            mortgage_value: Some(price / 2),
-            ..blank
-        },
-        SpaceKind::Utility { price } => BoardSpaceDto {
-            kind: "utility",
-            price: Some(price),
-            mortgage_value: Some(price / 2),
-            ..blank
-        },
-        SpaceKind::IncomeTax => BoardSpaceDto {
-            kind: "income_tax",
-            ..blank
-        },
-        SpaceKind::LuxuryTax => BoardSpaceDto {
-            kind: "luxury_tax",
-            ..blank
-        },
-        SpaceKind::Chance => BoardSpaceDto {
-            kind: "chance",
-            ..blank
-        },
-        SpaceKind::CommunityChest => BoardSpaceDto {
-            kind: "community_chest",
-            ..blank
-        },
-        SpaceKind::Jail => BoardSpaceDto {
-            kind: "jail",
-            ..blank
-        },
-        SpaceKind::FreeParking => BoardSpaceDto {
-            kind: "free_parking",
-            ..blank
-        },
-        SpaceKind::GoToJail => BoardSpaceDto {
-            kind: "go_to_jail",
-            ..blank
-        },
+            ..
+        } => (
+            "street",
+            Some(group),
+            Some(base_rent),
+            Some(house_rent),
+            Some(house_cost),
+        ),
+        SpaceKind::Railroad { .. } => ("railroad", None, None, None, None),
+        SpaceKind::Utility { .. } => ("utility", None, None, None, None),
+        SpaceKind::IncomeTax => ("income_tax", None, None, None, None),
+        SpaceKind::LuxuryTax => ("luxury_tax", None, None, None, None),
+        SpaceKind::Chance => ("chance", None, None, None, None),
+        SpaceKind::CommunityChest => ("community_chest", None, None, None, None),
+        SpaceKind::Jail => ("jail", None, None, None, None),
+        SpaceKind::FreeParking => ("free_parking", None, None, None, None),
+        SpaceKind::GoToJail => ("go_to_jail", None, None, None, None),
+    };
+    BoardSpaceDto {
+        index,
+        kind: label,
+        group,
+        price,
+        base_rent,
+        house_rent,
+        house_cost,
+        mortgage_value,
     }
 }
 

@@ -19,7 +19,7 @@ use monopoly_engine::{
 };
 
 use crate::interactive::decision::{DecisionAnswer, PendingDecision};
-use crate::interactive::session::SharedSessionState;
+use crate::interactive::session::{flush_new_events, SharedSessionState};
 
 #[derive(Debug)]
 pub struct HumanStrategy {
@@ -46,14 +46,17 @@ impl HumanStrategy {
         }
     }
 
-    /// Publishes `decision`, refreshing the shared state snapshot from
-    /// `view` (mutations up to this point in the turn have already
-    /// happened), then blocks until an answer arrives. Returns `None` if the
-    /// channel closed instead — the session was torn down (`DELETE
-    /// /sessions/:id` drops the `Sender`) while this seat was waiting.
+    /// Publishes `decision`, flushing this turn's events so far
+    /// (`view.log_since_turn_start`) and refreshing the shared state
+    /// snapshot from `view` (mutations up to this point in the turn have
+    /// already happened) in the same locked section, then blocks until an
+    /// answer arrives. Returns `None` if the channel closed instead — the
+    /// session was torn down (`DELETE /sessions/:id` drops the `Sender`)
+    /// while this seat was waiting.
     fn ask(&mut self, view: &GameView, decision: PendingDecision) -> Option<DecisionAnswer> {
         {
             let mut shared = self.shared.lock().unwrap();
+            flush_new_events(&mut shared, view.log_since_turn_start);
             shared.pending = Some(decision);
             shared.state = view.state.clone();
             shared.last_activity = Instant::now();

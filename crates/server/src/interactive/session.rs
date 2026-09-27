@@ -3,14 +3,19 @@
 //! at one seat blocking that same thread until the browser answers.
 //!
 //! `SessionHandle` (held by `AppState.sessions`) and the session thread
-//! share nothing but `SharedSessionState` behind a `Mutex` and the
-//! `mpsc` channel `HumanStrategy` blocks on — no cancellation flag is needed
-//! to tear a session down: dropping the last `Arc<SessionHandle>` (`DELETE
-//! /sessions/:id`) drops the channel's `Sender`, which wakes a blocked
-//! `HumanStrategy::recv()` with an `Err`, which resolves to that hook's safe
-//! default (see `human_strategy.rs`) and lets the thread run to completion
-//! (or the next decision, and so on) and exit on its own.
+//! share nothing but `SharedSessionState` behind a `Mutex` and the `mpsc`
+//! channel `HumanStrategy` blocks its `Receiver::recv()` on. Tearing a
+//! session down needs no cancellation flag: `DELETE /sessions/:id` drops the
+//! session's `Arc<SessionHandle>`, which drops its `Sender`, which wakes a
+//! blocked `recv()` with an `Err` — `HumanStrategy` resolves that to the
+//! same safe default it uses for any other closed-channel case (see
+//! `human_strategy.rs`), and the thread simply runs on to completion (or its
+//! next decision) and exits normally. A panic is unrelated and handled
+//! separately: `catch_unwind` in `run_session` catches it and publishes
+//! `SharedSessionState.errored` instead, since there's no thread left in
+//! that case to ever answer a pending decision.
 
+use std::collections::HashMap;
 use std::panic;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -19,10 +24,8 @@ use std::time::{Duration, Instant};
 
 use monopoly_engine::state::GameState;
 use monopoly_engine::strategies::make_strategy;
-use monopoly_engine::{
-    ConfigError, Event, EventEnvelope, Game, GameResult, PlayerConfig, RuleSet, Strategy,
-    SAFETY_MAX_TURNS,
-};
+use monopoly_engine::{ConfigError, EventEnvelope, Game, PlayerConfig, RuleSet, Strategy};
+use serde::Serialize;
 
 use crate::interactive::decision::{DecisionAnswer, PendingDecision};
 use crate::interactive::human_strategy::HumanStrategy;
@@ -30,6 +33,20 @@ use crate::interactive::human_strategy::HumanStrategy;
 /// A session with no activity (poll, or decision answered) for this long is
 /// dropped by the reaper task in `main.rs`.
 pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// The live-session map `AppState.sessions` holds and the reaper task in
+/// `main.rs` sweeps — named so the type isn't spelled out twice.
+pub type Sessions = Arc<Mutex<HashMap<String, Arc<SessionHandle>>>>;
+
+/// A session's terminal outcome — deliberately not `GameResult` (which also
+/// carries the full event log and a final `GameState`, both already
+/// available from `SharedSessionState.events`/`state` and would otherwise be
+/// duplicated in every snapshot response from here on).
+#[derive(Debug, Clone, Serialize)]
+pub struct GameOver {
+    pub winner: Option<usize>,
+    pub turns: u32,
+}
 
 /// State shared between a session's dedicated game thread and whichever
 /// async handler is currently reading/writing it. Cloned wholesale (into a
@@ -40,16 +57,19 @@ pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub struct SharedSessionState {
     pub state: GameState,
     pub pending: Option<PendingDecision>,
-    /// Every event produced so far, oldest first — `EventEnvelope::seq` is
-    /// already a monotonically increasing id assigned by the engine itself,
-    /// which is what `GET /sessions/:id?since_seq=` filters against, so
-    /// there's no need for a second, separately-maintained counter here.
+    /// Every event produced so far, oldest first.
     pub events: Vec<EventEnvelope>,
-    /// The most recent event's own `seq` (0 before any event has fired).
+    /// The most recently published event's own `seq` (0 before any event has
+    /// fired) — `EventEnvelope::seq` is already a monotonically increasing
+    /// id assigned by the engine itself, so this doubles as both the
+    /// `since_seq` watermark `GET`/`POST` responses filter against and the
+    /// "already flushed up to here" marker `flush_new_events` uses to avoid
+    /// publishing the same event twice (once mid-turn via `HumanStrategy`,
+    /// once more at turn end).
     pub seq: u64,
-    pub game_over: Option<GameResult>,
+    pub game_over: Option<GameOver>,
     /// Set instead of `game_over` if the session thread panicked — a caught
-    /// panic (`spawn_session`'s `catch_unwind`) publishes this terminal state
+    /// panic (`run_session`'s `catch_unwind`) publishes this terminal state
     /// rather than leaving the session silently hung with no thread left to
     /// answer it.
     pub errored: Option<String>,
@@ -67,6 +87,22 @@ impl SharedSessionState {
     }
 }
 
+/// Appends every event in `events` past what's already been published
+/// (`shared.seq`), advancing `shared.seq` to the last one appended.
+/// `events` must be seq-ordered (true of any slice the engine hands back).
+/// Used identically whether flushing a turn's events so far as a decision is
+/// published mid-turn (`HumanStrategy::ask`) or its remaining events once the
+/// turn ends (`step_until_done`) — the shared `seq` watermark is what keeps
+/// an event flushed by the first from being republished by the second.
+pub(crate) fn flush_new_events(shared: &mut SharedSessionState, events: &[EventEnvelope]) {
+    let already_published = events.partition_point(|e| e.seq <= shared.seq);
+    let new = &events[already_published..];
+    if let Some(last) = new.last() {
+        shared.seq = last.seq;
+    }
+    shared.events.extend_from_slice(new);
+}
+
 pub enum SubmitError {
     NothingPending,
     KindMismatch,
@@ -77,11 +113,7 @@ pub struct SessionHandle {
     pub id: String,
     pub human_seat: usize,
     pub shared: Arc<Mutex<SharedSessionState>>,
-    // A plain `mpsc::Sender` rather than bare — wrapped in a `Mutex` so
-    // `SessionHandle` (shared via `Arc` across concurrent requests) doesn't
-    // need to lean on `Sender`'s own (version-dependent) `Sync` bound; sends
-    // are rare (one per answered decision) so the extra lock is free.
-    answers_tx: Mutex<mpsc::Sender<DecisionAnswer>>,
+    answers_tx: mpsc::Sender<DecisionAnswer>,
 }
 
 impl SessionHandle {
@@ -101,9 +133,7 @@ impl SessionHandle {
         }
         match &shared.pending {
             None => return Err(SubmitError::NothingPending),
-            Some(pending) if pending.kind() != answer.kind() => {
-                return Err(SubmitError::KindMismatch)
-            }
+            Some(pending) if !answer.answers(pending) => return Err(SubmitError::KindMismatch),
             Some(_) => {}
         }
         shared.pending = None;
@@ -114,14 +144,15 @@ impl SessionHandle {
         // exited between the checks above and this send, e.g. it just hit
         // the turn cap) — a `send` error just means the answer arrived too
         // late to matter, not a client-facing failure.
-        let _ = self.answers_tx.lock().unwrap().send(answer);
+        let _ = self.answers_tx.send(answer);
         Ok(())
     }
 }
 
 /// Builds the seat vector (CPU seats via `make_strategy`, the human seat via
 /// `HumanStrategy`), constructs the `Game`, and spawns its dedicated thread.
-/// Returns the same `ConfigError`s `Game::new` would for a bad player list —
+/// Returns the same `ConfigError`s `Game::with_strategies` would for a bad
+/// player list (fewer than 2, or an unrecognized non-human strategy id) —
 /// `human_seat` itself is validated by the caller (the route handler), since
 /// "which seat is human" isn't a concept `ConfigError` has a variant for.
 pub fn spawn_session(
@@ -131,9 +162,6 @@ pub fn spawn_session(
     human_seat: usize,
     seed: u64,
 ) -> Result<Arc<SessionHandle>, ConfigError> {
-    if players.len() < 2 {
-        return Err(ConfigError::NotEnoughPlayers(players.len()));
-    }
     let names: Vec<String> = players.iter().map(|p| p.name.clone()).collect();
 
     // The initial (turn-0) snapshot, published immediately so the handler
@@ -164,33 +192,25 @@ pub fn spawn_session(
             strategies.push(strategy);
         }
     }
-    // Read before `with_strategies` moves `rules` — the session thread's own
-    // loop condition, mirroring `Game::run_to_completion`'s (see
-    // `SAFETY_MAX_TURNS`'s doc comment on why `step_turn` itself enforces no
-    // cap of its own).
-    let turn_cap = rules.max_turns.unwrap_or(SAFETY_MAX_TURNS);
     let game = Game::with_strategies(rules, &names, strategies, seed)?;
 
     let handle = Arc::new(SessionHandle {
         id,
         human_seat,
         shared: shared.clone(),
-        answers_tx: Mutex::new(tx),
+        answers_tx: tx,
     });
 
-    thread::spawn(move || run_session(game, turn_cap, shared));
+    thread::spawn(move || run_session(game, shared));
 
     Ok(handle)
 }
 
-/// The session thread's body: step the game to completion (or the turn
-/// cap), publishing state/events after every turn, then record the terminal
-/// outcome. Wrapped in `catch_unwind` by the caller... actually done here so
-/// this function alone owns the whole thread's lifetime.
-fn run_session(game: Game, turn_cap: u32, shared: Arc<Mutex<SharedSessionState>>) {
-    let outcome = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        step_until_done(game, turn_cap, &shared)
-    }));
+/// The session thread's whole body: run the game to completion (or a caught
+/// panic), then, only on a panic, publish `errored`. `step_until_done` itself
+/// publishes `game_over` in the normal case.
+fn run_session(game: Game, shared: Arc<Mutex<SharedSessionState>>) {
+    let outcome = panic::catch_unwind(panic::AssertUnwindSafe(|| step_until_done(game, &shared)));
     if let Err(payload) = outcome {
         let message = panic_message(&payload);
         let mut locked = shared.lock().unwrap();
@@ -204,57 +224,32 @@ fn run_session(game: Game, turn_cap: u32, shared: Arc<Mutex<SharedSessionState>>
     }
 }
 
-fn step_until_done(mut game: Game, turn_cap: u32, shared: &Arc<Mutex<SharedSessionState>>) {
+/// Steps `game` to completion (or its turn cap), publishing state/events
+/// after every turn, then finishes it and publishes the terminal outcome.
+fn step_until_done(mut game: Game, shared: &Arc<Mutex<SharedSessionState>>) {
+    let turn_cap = game.turn_cap();
     while !game.is_over() && game.state().turn < turn_cap {
         let new_events = game.step_turn().to_vec();
-        let mut locked = shared.lock().unwrap();
-        if let Some(last) = new_events.last() {
-            locked.seq = last.seq;
-        }
-        locked.events.extend(new_events);
-        locked.state = game.state().clone();
-        locked.touch();
+        publish(shared, &new_events, game.state());
     }
-    finalize(&game, shared);
-}
-
-/// Determines the winner (if any) the same way `Game::run_to_completion`
-/// does, and publishes it as both a synthetic `GameEnded` event (so a client
-/// that only ever reads `events` still sees one, matching every other
-/// driver of the engine) and `SharedSessionState.game_over`. Built entirely
-/// from `Game`'s public accessors — `Game::run_to_completion` isn't reused
-/// here since it would `mem::take` the *entire* internal log (everything
-/// since turn 1), which `step_until_done` has already been publishing
-/// incrementally; calling it would republish every prior event a second
-/// time.
-fn finalize(game: &Game, shared: &Arc<Mutex<SharedSessionState>>) {
-    let winner = match game.state().active_player_count() {
-        1 => game.state().players.iter().position(|p| !p.bankrupt),
-        _ => None,
-    };
-    let turns = game.state().turn;
-    let closing_player = winner.unwrap_or(game.state().current_player);
+    // `finish` may have nothing left to add (`HumanStrategy::ask` can have
+    // already flushed everything up to this point mid-turn via the shared
+    // `seq` watermark) — `publish` handles an empty/already-seen slice fine.
+    let closing_events = game.finish().to_vec();
+    publish(shared, &closing_events, game.state());
 
     let mut locked = shared.lock().unwrap();
-    locked.seq += 1;
-    let seq = locked.seq;
-    locked.events.push(EventEnvelope {
-        turn: turns,
-        player: closing_player,
-        seq,
-        event: Event::GameEnded { winner, turns },
+    locked.game_over = Some(GameOver {
+        winner: game.winner(),
+        turns: game.state().turn,
     });
-    locked.state = game.state().clone();
-    // `events` is left empty here rather than duplicating
-    // `SharedSessionState.events` a second time inside every future
-    // snapshot response — the full log is already available incrementally
-    // via `events`/`since_seq`.
-    locked.game_over = Some(GameResult {
-        winner,
-        turns,
-        events: Vec::new(),
-        final_state: game.state().clone(),
-    });
+    locked.touch();
+}
+
+fn publish(shared: &Arc<Mutex<SharedSessionState>>, events: &[EventEnvelope], state: &GameState) {
+    let mut locked = shared.lock().unwrap();
+    flush_new_events(&mut locked, events);
+    locked.state = state.clone();
     locked.touch();
 }
 

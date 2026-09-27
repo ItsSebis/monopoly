@@ -29,19 +29,23 @@ pub struct Game {
     board: Board,
     rules: RuleSet,
     state: GameState,
-    // `+ Send`: widened in Phase 9 so the interactive server can run a `Game`
-    // to completion on a dedicated OS thread (a blocking `HumanStrategy` at
-    // one seat is what makes that thread the human player's resume point —
-    // see `crates/server/src/interactive/human_strategy.rs`). Every built-in
-    // strategy is already `Send` (plain data, no interior mutability), so
-    // this is a type-only widening with no behavior change for CPU-only
-    // games.
+    // `Send` lets a whole `Game` be moved onto another thread (see
+    // `docs/simulation-engine.md#interactive-sessions-the-human-strategy`).
+    // Every built-in strategy already satisfies it (plain data, no interior
+    // mutability).
     strategies: Vec<Box<dyn Strategy + Send>>,
     rng: StdRng,
     chance: Deck,
     community_chest: Deck,
     seq: u64,
     log: Vec<EventEnvelope>,
+    /// `log.len()` as of the start of the turn currently being resolved —
+    /// what a `GameView` built mid-turn exposes as
+    /// `log_since_turn_start` (see `view`/`strategy_and_view`), so a
+    /// `Strategy` asked a decision partway through a turn can see the events
+    /// that already happened this turn (the roll, the move, a card draw)
+    /// without waiting for `step_turn` to return.
+    turn_log_start: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,13 +95,10 @@ impl Game {
     }
 
     /// The same construction `Game::new` does, minus the strategy-id
-    /// resolution loop: callers hand over already-built strategies directly.
-    /// Added in Phase 9 for the interactive server, which needs to inject a
-    /// `HumanStrategy` at one seat — something no strategy-id string can
-    /// express — while every CPU seat still goes through the normal
-    /// `make_strategy` lookup. `Game::new` is now just this plus that lookup,
-    /// so every existing caller (CLI, batch, tournament, the archive server,
-    /// engine-wasm) is unaffected.
+    /// resolution loop: callers hand over already-built strategies directly,
+    /// for when a strategy can't be expressed as a registered id (see
+    /// `docs/simulation-engine.md#interactive-sessions-the-human-strategy`).
+    /// `Game::new` is just this plus that lookup.
     pub fn with_strategies(
         rules: RuleSet,
         names: &[String],
@@ -120,6 +121,7 @@ impl Game {
             community_chest,
             seq: 0,
             log: Vec::new(),
+            turn_log_start: 0,
         })
     }
 
@@ -134,17 +136,34 @@ impl Game {
         &self.state
     }
 
-    /// Runs turns until one player remains (or the internal safety cap is
-    /// hit) and returns the full result.
-    pub fn run_to_completion(&mut self) -> GameResult {
-        let turn_cap = self.rules.max_turns.unwrap_or(SAFETY_MAX_TURNS);
-        while !self.is_over() && self.state.turn < turn_cap {
-            self.step_turn();
-        }
-        let winner = match self.state.active_player_count() {
+    /// The turn `run_to_completion`'s own loop stops at (`RuleSet.max_turns`,
+    /// or `SAFETY_MAX_TURNS` if unset) — public so a caller driving the game
+    /// turn-by-turn itself via `step_turn` (Phase 5/6's browser live
+    /// playback, Phase 9's interactive server) can enforce the same cap
+    /// without duplicating `RuleSet.max_turns`'s fallback logic. See
+    /// `step_turn`'s doc comment for why `step_turn` itself enforces no cap.
+    pub fn turn_cap(&self) -> u32 {
+        self.rules.max_turns.unwrap_or(SAFETY_MAX_TURNS)
+    }
+
+    /// The winning player, if exactly one remains — `None` both when the
+    /// game is still ongoing and when it ended at the turn cap with more
+    /// than one player still standing.
+    pub fn winner(&self) -> Option<usize> {
+        match self.state.active_player_count() {
             1 => self.state.players.iter().position(|p| !p.bankrupt),
             _ => None,
-        };
+        }
+    }
+
+    /// Records the terminal `GameEnded` event and returns just that new
+    /// event — the one piece of `run_to_completion` a caller driving
+    /// `step_turn` itself still needs once its own loop condition ends the
+    /// game, so winner detection lives in exactly one place rather than
+    /// being hand-duplicated by every such caller.
+    pub fn finish(&mut self) -> &[EventEnvelope] {
+        let start = self.log.len();
+        let winner = self.winner();
         let turns = self.state.turn;
         // Attribute the closing event to the winner when there is one: if the
         // game ended by the *current* player's own bankruptcy, `current_player`
@@ -153,11 +172,21 @@ impl Game {
         // final envelope.
         let closing_player = winner.unwrap_or(self.state.current_player);
         self.record(closing_player, Event::GameEnded { winner, turns });
-        // Moved out rather than cloned: the log reaches tens of thousands of
-        // envelopes in a long game, and the `Game` is done with it.
+        &self.log[start..]
+    }
+
+    /// Runs turns until one player remains (or the internal safety cap is
+    /// hit) and returns the full result.
+    pub fn run_to_completion(&mut self) -> GameResult {
+        while !self.is_over() && self.state.turn < self.turn_cap() {
+            self.step_turn();
+        }
+        self.finish();
         GameResult {
-            winner,
-            turns,
+            winner: self.winner(),
+            turns: self.state.turn,
+            // Moved out rather than cloned: the log reaches tens of thousands
+            // of envelopes in a long game, and the `Game` is done with it.
             events: std::mem::take(&mut self.log),
             final_state: self.state.clone(),
         }
@@ -178,6 +207,7 @@ impl Game {
             board: &self.board,
             rules: &self.rules,
             state: &self.state,
+            log_since_turn_start: &self.log[self.turn_log_start..],
         }
     }
 
@@ -189,6 +219,7 @@ impl Game {
             board: &self.board,
             rules: &self.rules,
             state: &self.state,
+            log_since_turn_start: &self.log[self.turn_log_start..],
         };
         (self.strategies[player].as_mut(), view)
     }
@@ -215,6 +246,7 @@ impl Game {
     /// `RuleSet.max_turns` — see `SAFETY_MAX_TURNS`'s doc comment.
     pub fn step_turn(&mut self) -> &[EventEnvelope] {
         let start = self.log.len();
+        self.turn_log_start = start;
         self.state.turn += 1;
         let player = self.state.current_player;
 
@@ -677,10 +709,13 @@ impl Game {
     }
 
     /// Attempts to build one house/hotel increment on `space` for `player`;
-    /// a no-op if the request is invalid (wrong owner, breaks the even-build
-    /// rule, insufficient bank supply, or unaffordable) — see
-    /// `BuildAction`'s doc comment.
+    /// a no-op if the request is invalid (out-of-range space index, wrong
+    /// owner, breaks the even-build rule, insufficient bank supply, or
+    /// unaffordable) — see `BuildAction`'s doc comment.
     fn try_build(&mut self, player: usize, space: usize) -> bool {
+        if space >= BOARD_SIZE {
+            return false;
+        }
         let SpaceKind::Street {
             group, house_cost, ..
         } = self.board.space(space)
@@ -735,7 +770,11 @@ impl Game {
     /// half its build cost. Converting a hotel back to houses needs the bank
     /// to actually have 4 houses to hand over — a known edge case even in
     /// physical play — so that specific sale is skipped if supply is short.
+    /// Out-of-range `space` is a no-op, same as `try_build`.
     fn try_sell_house(&mut self, player: usize, space: usize) -> bool {
+        if space >= BOARD_SIZE {
+            return false;
+        }
         let SpaceKind::Street {
             group, house_cost, ..
         } = self.board.space(space)
@@ -777,8 +816,12 @@ impl Game {
 
     /// Mortgages `space` for half its purchase price. Buildings must already
     /// be sold (see `try_sell_house`) — a built-up property can't be
-    /// mortgaged directly.
+    /// mortgaged directly. Out-of-range `space` is a no-op, same as
+    /// `try_build`.
     fn try_mortgage(&mut self, player: usize, space: usize) -> bool {
+        if space >= BOARD_SIZE {
+            return false;
+        }
         let prop = self.state.properties[space];
         if prop.owner != Some(player) || prop.mortgaged || prop.houses > 0 {
             return false;
@@ -826,13 +869,14 @@ impl Game {
 
     /// Calls `Strategy::decide_trade` once, at the end of `player`'s own
     /// turn, only when `RuleSet.trading_enabled` (see
-    /// `docs/game-rules.md#trading`). An invalid proposal (unowned/mortgaged/
-    /// developed property on either side, unaffordable cash, trading with
-    /// self or a bankrupt player) is silently dropped without even asking the
-    /// counterparty — matching how every other `Strategy` action here is
-    /// validated rather than trusted. A valid proposal is offered to the
-    /// counterparty via `decide_trade_response`; accepted trades are applied
-    /// atomically (`execute_trade`), declined ones change nothing.
+    /// `docs/game-rules.md#trading`). An invalid proposal (an out-of-range
+    /// property index, unowned/mortgaged/developed property on either side,
+    /// unaffordable cash, trading with self or a bankrupt player) is
+    /// silently dropped without even asking the counterparty — matching how
+    /// every other `Strategy` action here is validated rather than trusted.
+    /// A valid proposal is offered to the counterparty via
+    /// `decide_trade_response`; accepted trades are applied atomically
+    /// (`execute_trade`), declined ones change nothing.
     fn maybe_trade(&mut self, player: usize) {
         let (strategy, view) = self.strategy_and_view(player);
         let Some(offer) = strategy.decide_trade(&view, player) else {
@@ -869,7 +913,8 @@ impl Game {
         }
         let owns_and_tradeable = |owner: usize, spaces: &[usize]| {
             spaces.iter().all(|&s| {
-                self.state.properties[s].owner == Some(owner)
+                s < BOARD_SIZE
+                    && self.state.properties[s].owner == Some(owner)
                     && !self.state.properties[s].mortgaged
                     && self.state.properties[s].houses == 0
             })
@@ -1782,5 +1827,99 @@ mod tests {
 
         assert_eq!(game.state.properties[1].owner, Some(0));
         assert_eq!(game.state.properties[3].owner, Some(1));
+    }
+
+    /// Regression: `Strategy` implementations aren't only trusted built-ins
+    /// any more (the interactive server's `HumanStrategy` can return any
+    /// space index a client's JSON claims), so an out-of-range index must be
+    /// a no-op, not a panic — `Board::space`/`state.properties[..]` index
+    /// directly with no bounds check of their own.
+    #[test]
+    fn an_out_of_range_space_index_is_a_no_op_not_a_panic() {
+        let mut game = Game::new(RuleSet::default(), &two_players(), 0).unwrap();
+        game.state.players[0].cash = 10_000;
+
+        assert!(!game.try_build(0, BOARD_SIZE + 5));
+        assert!(!game.try_sell_house(0, BOARD_SIZE + 5));
+        assert!(!game.try_mortgage(0, BOARD_SIZE + 5));
+
+        let offer = trade_offer(1, vec![BOARD_SIZE + 5], 0, vec![]);
+        assert!(!game.trade_is_valid(0, &offer));
+        let offer = trade_offer(1, vec![], 0, vec![BOARD_SIZE + 5]);
+        assert!(!game.trade_is_valid(0, &offer));
+    }
+
+    /// A `Strategy` asked to decide something partway through a turn (e.g. a
+    /// purchase after this turn's roll and move) must already be able to see
+    /// that turn's own earlier events via `GameView::log_since_turn_start` —
+    /// this is what lets the interactive server (`HumanStrategy`) publish
+    /// events to a polling client as they happen, instead of only once
+    /// `step_turn` returns.
+    #[derive(Debug)]
+    struct EventCountSpy(std::sync::Arc<std::sync::Mutex<Option<usize>>>);
+
+    impl Strategy for EventCountSpy {
+        fn decide_purchase(
+            &mut self,
+            view: &GameView,
+            _player: usize,
+            _offer: &PurchaseOffer,
+        ) -> bool {
+            *self.0.lock().unwrap() = Some(view.log_since_turn_start.len());
+            false
+        }
+        fn decide_jail_action(&mut self, _view: &GameView, _player: usize) -> JailAction {
+            JailAction::RollForDoubles
+        }
+        fn decide_build(&mut self, _view: &GameView, _player: usize) -> Vec<BuildAction> {
+            Vec::new()
+        }
+        fn decide_mortgage(
+            &mut self,
+            _view: &GameView,
+            _player: usize,
+            _shortfall: u32,
+        ) -> Vec<MortgageAction> {
+            Vec::new()
+        }
+        fn decide_auction_bid(
+            &mut self,
+            _view: &GameView,
+            _player: usize,
+            _space: usize,
+        ) -> Option<u32> {
+            None
+        }
+        fn decide_trade(&mut self, _view: &GameView, _player: usize) -> Option<TradeOffer> {
+            None
+        }
+        fn decide_trade_response(
+            &mut self,
+            _view: &GameView,
+            _player: usize,
+            _offer: &TradeOffer,
+        ) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn log_since_turn_start_already_contains_this_turns_earlier_events_at_decision_time() {
+        for seed in 0..50u64 {
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let mut game = Game::new(RuleSet::default(), &two_players(), seed).unwrap();
+            game.strategies[0] = Box::new(EventCountSpy(seen.clone()));
+            game.step_turn();
+            let Some(seen_len) = *seen.lock().unwrap() else {
+                continue; // this seed's first roll didn't land on an unowned property
+            };
+            assert!(
+                seen_len >= 2,
+                "seed {seed}: decide_purchase should already see this turn's RollDice and \
+                 Move events (saw {seen_len})"
+            );
+            return;
+        }
+        panic!("no seed among the first 50 landed on an unowned property on turn one");
     }
 }

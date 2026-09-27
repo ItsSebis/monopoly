@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Monopoly</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap"
+    />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
@@ -26,6 +32,7 @@
             <legend>Mode</legend>
             <label><input type="radio" name="run_mode" value="live" checked /> Live (watch it play out)</label>
             <label><input type="radio" name="run_mode" value="batch" /> Batch (run many games on the server)</label>
+            <label><input type="radio" name="run_mode" value="interactive" /> Interactive (play against the CPU)</label>
           </fieldset>
 
           <fieldset>
@@ -56,14 +63,13 @@
           <fieldset>
             <legend>Players</legend>
             <div id="player-rows"></div>
-            <button type="button" id="add-player" disabled>Add player</button>
+            <button type="button" id="add-player">Add player</button>
           </fieldset>
 
           <label id="seed-field">Seed (optional) <input type="number" name="seed" placeholder="random" /></label>
           <label id="game-count-field" hidden>Games <input type="number" name="game_count" value="1000" min="1" /></label>
 
-          <button type="submit" id="start-button" disabled>Start</button>
-          <span id="loading-note">loading engine…</span>
+          <button type="submit" id="start-button">Start</button>
           <p id="config-error" role="alert"></p>
         </form>
       </section>
@@ -95,6 +101,7 @@
         <div id="game-layout">
           <div id="board"></div>
           <div id="side-panel">
+            <div id="decision-prompt" hidden></div>
             <div id="player-panel"></div>
             <div id="event-log" aria-live="polite"></div>
           </div>

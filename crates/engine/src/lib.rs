@@ -31,5 +31,8 @@ pub use run_record::{
     SingleRunRecord,
 };
 pub use stats::{compute_stats, PerGameStats};
-pub use strategies::STRATEGY_IDS;
+pub use strategies::{
+    AuctionPolicy, BuildPolicy, Configurable, ConfigurableParams, JailPolicy, TradePolicy,
+    Valuation, STRATEGY_IDS,
+};
 pub use strategy::{BuildAction, JailAction, MortgageAction, PurchaseOffer, Strategy, TradeOffer};

@@ -1,0 +1,18 @@
+# Phase 8 strategy search (`monopoly sweep`): the plain official-rules
+# environment, isolating "no house rules, no trading" as the baseline every
+# other sweep_*.toml varies exactly one axis away from.
+starting_cash = 1500
+go_salary = 200
+jail_fine = 50
+luxury_tax = 75
+even_build_rule = true
+auction_on_decline = true
+free_parking_pot = false
+max_turns = 500
+double_go_salary = false
+unlimited_houses = false
+trading_enabled = false
+
+[income_tax_mode]
+mode = "choice"
+flat_amount = 200

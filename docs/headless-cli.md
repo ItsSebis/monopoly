@@ -45,6 +45,19 @@ A `Batch` whose player list is auto-generated instead of hand-written in a confi
 - `--out` — same `BatchRunRecord` JSON shape `batch --out` writes.
 - With no `--out`, prints the same win-rate/ROI/head-to-head summary `batch` does, and shows the same progress bar.
 
+## `monopoly sweep` — search `Configurable`'s axis space
+
+```sh
+monopoly sweep --seed 1 --out-dir sweep_results
+```
+
+The Phase 8 strategy search ([roadmap.md](./roadmap.md)'s Phase 8 entry, [strategy-search-results.md](./strategy-search-results.md) for the actual results): searches every `JailPolicy`/`BuildPolicy`/`AuctionPolicy`/`TradePolicy` combination of `Configurable` (`crates/engine/src/strategies/configurable.rs`), seated via a `cfg:{json}` strategy id against the 5 named strategies, across the 4 `examples/sweep_*.toml` ruleset environments, then refines the best combo's reserve and valuation. Unlike `batch`/`tournament`, this isn't meant to be re-run routinely — it's a one-off research tool that produced the hardcoded `buy_optimal` strategy.
+
+- `--rules-dir` — directory containing `sweep_baseline.toml`, `sweep_trading.toml`, `sweep_house_rules.toml`, and `sweep_maximal.toml`; defaults to `examples`.
+- `--games-per-matchup` — total games per candidate configuration per ruleset, split evenly across 6 seat rotations; defaults to 1200.
+- `--seed` — base seed every candidate's rotations are deterministically derived from; defaults to 1.
+- `--out-dir` — where the per-ruleset ranked CSVs and `summary.md` are written; defaults to `sweep_results`.
+
 ## Config file format
 
 ```toml
@@ -76,6 +89,7 @@ This is the exact `RuleSet`/`PlayerConfig` shape from [data-model.md](./data-mod
 - `house_rules_variant.toml` — every optional house-rule toggle combined (`free_parking_pot`, `double_go_salary`, `unlimited_houses`).
 - `buy_shrewd_showdown.toml` — Buy Shrewd against the rest of the built-in roster.
 - `rules_only.toml` — a standalone `RuleSet` (no `players`) for `monopoly tournament --rules`.
+- `sweep_baseline.toml` / `sweep_trading.toml` / `sweep_house_rules.toml` / `sweep_maximal.toml` — the 4 ruleset environments `monopoly sweep` (above) searches across; each isolates one axis (no optional rules, trading only, house rules only, everything on).
 
 ## Exit codes and errors
 

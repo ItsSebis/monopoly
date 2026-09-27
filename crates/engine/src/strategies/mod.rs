@@ -2,13 +2,20 @@ mod buy_all;
 mod buy_bad;
 mod buy_good;
 mod buy_none;
+mod buy_optimal;
 mod buy_shrewd;
+mod configurable;
 
 pub use buy_all::BuyAll;
 pub use buy_bad::BuyBad;
 pub use buy_good::BuyGood;
 pub use buy_none::BuyNone;
+pub use buy_optimal::BuyOptimal;
 pub use buy_shrewd::BuyShrewd;
+pub use configurable::{
+    AuctionPolicy, BuildPolicy, Configurable, ConfigurableParams, JailPolicy, TradePolicy,
+    Valuation,
+};
 
 use crate::board::{ColorGroup, SpaceKind, BOARD_SIZE};
 use crate::building::can_build;
@@ -19,7 +26,14 @@ use crate::strategy::{BuildAction, JailAction, MortgageAction, Strategy, TradeOf
 /// them — the one source of truth for anything that needs to list them (e.g.
 /// the browser's strategy dropdown in Phase 5), instead of a hand-maintained
 /// duplicate.
-pub const STRATEGY_IDS: &[&str] = &["buy_all", "buy_good", "buy_bad", "buy_none", "buy_shrewd"];
+pub const STRATEGY_IDS: &[&str] = &[
+    "buy_all",
+    "buy_good",
+    "buy_bad",
+    "buy_none",
+    "buy_shrewd",
+    "buy_optimal",
+];
 
 /// Construct a built-in strategy by its registered id (used by config files
 /// and the CLI). `None` for an unrecognized id, so callers can report a
@@ -31,7 +45,15 @@ pub fn make_strategy(id: &str) -> Option<Box<dyn Strategy>> {
         "buy_bad" => Some(Box::new(BuyBad)),
         "buy_none" => Some(Box::new(BuyNone)),
         "buy_shrewd" => Some(Box::new(BuyShrewd)),
-        _ => None,
+        "buy_optimal" => Some(Box::new(BuyOptimal::default())),
+        _ => {
+            if let Some(json) = id.strip_prefix("cfg:") {
+                let params: ConfigurableParams = serde_json::from_str(json).ok()?;
+                Some(Box::new(Configurable(params)))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -44,6 +66,42 @@ fn patient_jail_action(view: &GameView, player: usize) -> JailAction {
         .any(|group| view.owns_full_group(player, group));
 
     if holds_a_monopoly && view.player(player).cash >= view.rules.jail_fine as i64 {
+        JailAction::PayFine
+    } else {
+        JailAction::RollForDoubles
+    }
+}
+
+/// Jail logic shared by Buy All and any `Configurable` using
+/// `JailPolicy::PayIfAffordable`: pay the fine immediately whenever cash
+/// allows, regardless of monopoly status — the simplest possible policy,
+/// with no phase-dependence at all (contrast `patient_jail_action` and
+/// `hotel_risk_jail_action`, both of which condition on monopoly state).
+fn affordable_jail_action(view: &GameView, player: usize) -> JailAction {
+    if view.player(player).cash >= view.rules.jail_fine as i64 {
+        JailAction::PayFine
+    } else {
+        JailAction::RollForDoubles
+    }
+}
+
+/// Phase-dependent jail policy keyed on *opponents'* hotel risk, not the
+/// acting player's own monopolies (unlike `patient_jail_action`): leave fast
+/// while no opponent has a built-up monopoly yet (the board is still open,
+/// nothing dangerous to land on), stay once one does (avoiding the risk of
+/// landing on it, at the cost of a slower re-roll) — see
+/// docs/player-strategies.md's Jail section. Shared by Buy Shrewd and any
+/// `Configurable` using `JailPolicy::HotelRisk`.
+fn hotel_risk_jail_action(view: &GameView, player: usize) -> JailAction {
+    let opponent_has_a_built_monopoly = (0..view.state.players.len())
+        .filter(|&p| p != player && !view.state.players[p].bankrupt)
+        .any(|p| {
+            ColorGroup::ALL.into_iter().any(|group| {
+                view.owns_full_group(p, group)
+                    && view.group_house_counts(group).iter().any(|&h| h > 0)
+            })
+        });
+    if !opponent_has_a_built_monopoly && view.player(player).cash >= view.rules.jail_fine as i64 {
         JailAction::PayFine
     } else {
         JailAction::RollForDoubles
@@ -86,6 +144,35 @@ fn rent_to_price_score(view: &GameView, player: usize, space: usize) -> Option<f
         // moderate investment rather than scored on the street formula.
         SpaceKind::Railroad { .. } | SpaceKind::Utility { .. } => Some(RATIO_THRESHOLD),
         _ => None,
+    }
+}
+
+/// A static per-group landing-frequency multiplier, from the Markov-chain
+/// research cited in docs/player-strategies.md: Jail itself is the
+/// single most-landed-on space, and the Orange/Red groups just past it
+/// inherit that traffic (Orange the most, Red close behind) — the gap this
+/// strategy exists to cover, which docs/player-strategies.md's Buy Good
+/// section records as considered and skipped there. Every other group is
+/// unweighted; this is a multiplier on top of the shared
+/// rent-to-price-plus-monopoly-bonus score, not a replacement for it.
+fn landing_weight(group: ColorGroup) -> f64 {
+    match group {
+        ColorGroup::Orange => 1.3,
+        ColorGroup::Red => 1.15,
+        _ => 1.0,
+    }
+}
+
+/// The shared `rent_to_price_score`, multiplied by `landing_weight` — and
+/// still judged against the same `RATIO_THRESHOLD` as the plain score, since
+/// the weighting, not the bar, is what differs. Railroads and utilities
+/// belong to no color group, so they keep the shared score unchanged. Shared
+/// by Buy Shrewd and any `Configurable` using `Valuation::Weighted`.
+fn weighted_score(view: &GameView, player: usize, space: usize) -> Option<f64> {
+    let base = rent_to_price_score(view, player, space)?;
+    match view.board.space(space) {
+        SpaceKind::Street { group, .. } => Some(base * landing_weight(group)),
+        _ => Some(base),
     }
 }
 

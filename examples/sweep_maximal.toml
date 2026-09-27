@@ -1,0 +1,19 @@
+# Phase 8 strategy search (`monopoly sweep`): every optional rule on at
+# once (trading plus all three house rules), isolating the most permissive
+# environment against baseline/trading/house_rules to see whether the same
+# behavioral axes keep winning as the rules stack up.
+starting_cash = 1500
+go_salary = 200
+jail_fine = 50
+luxury_tax = 75
+even_build_rule = true
+auction_on_decline = true
+free_parking_pot = true
+max_turns = 500
+double_go_salary = true
+unlimited_houses = true
+trading_enabled = true
+
+[income_tax_mode]
+mode = "choice"
+flat_amount = 200

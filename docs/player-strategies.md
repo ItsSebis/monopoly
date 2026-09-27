@@ -30,16 +30,20 @@ Added in Phase 7, combining every gap the "Where the built-in strategies diverge
 - **Auction denial bidding**: if a single other player already owns every other member of a group up for auction, bids up to full affordability regardless of its own valuation, purely to block that player's monopoly.
 - **Trading**: uses the same monopoly-completing heuristic Buy All/Buy Good share (see below).
 
+### Buy Optimal
+
+Added in Phase 8, the winner of an empirical search over `Configurable`'s axis space (see [strategy-search-results.md](./strategy-search-results.md) for the full search and numbers) — `monopoly sweep` seated every combination of jail/build/auction/trade policy against the other five built-ins across 4 ruleset environments and ranked the results. It reads as *Buy All's low $50 reserve, simple "pay if affordable" jail policy, and build-all-the-way-to-a-hotel behavior, but gated on Buy Shrewd's landing-frequency-weighted valuation instead of buying every affordable property*: neither buying indiscriminately (Buy All) nor Buy Shrewd's full added sophistication (opponent-hotel-risk jail, house-supply denial, denial bidding) justified itself against this panel — only the weighted purchase/bid filter did. Implemented as a thin wrapper around `Configurable` with its winning parameters hardcoded (`crates/engine/src/strategies/buy_optimal.rs`), rather than new logic.
+
 ## Decision summary by strategy
 
-| Decision | Buy All | Buy Good | Buy Bad | Buy None | Buy Shrewd |
-|---|---|---|---|---|---|
-| Purchase | Always, if reserve allows | Threshold heuristic | Inverse heuristic | Never | Threshold heuristic, landing-frequency-weighted |
-| Auction bid | Up to affordability minus reserve | Up to heuristic value | Overbids on poor properties | Always abstains | Denial bid if it'd block an opponent's monopoly, else weighted heuristic value |
-| Build | ASAP once monopoly held, $50 reserve | Same, $150 reserve | Never (see above) | Never (owns nothing) | ASAP to 4 houses, $100 reserve, never hotels (supply denial) |
-| Mortgage / sell houses | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | N/A (owns nothing) | Cheapest-first, to avoid bankruptcy |
-| Jail (no card held) | Pay if affordable | Stay early, pay once profitable | Roll for doubles (default) | Same as Buy Good | Leave while no opponent has built up, stay once one does |
-| Trade (`RuleSet.trading_enabled`, Phase 7) | Proposes/accepts monopoly-completing swaps (see below) | Same logic as Buy All | Never proposes or accepts | Never proposes or accepts | Same logic as Buy All |
+| Decision | Buy All | Buy Good | Buy Bad | Buy None | Buy Shrewd | Buy Optimal |
+|---|---|---|---|---|---|---|
+| Purchase | Always, if reserve allows | Threshold heuristic | Inverse heuristic | Never | Threshold heuristic, landing-frequency-weighted | Threshold heuristic, landing-frequency-weighted |
+| Auction bid | Up to affordability minus reserve | Up to heuristic value | Overbids on poor properties | Always abstains | Denial bid if it'd block an opponent's monopoly, else weighted heuristic value | Up to weighted heuristic value (no denial bidding) |
+| Build | ASAP once monopoly held, $50 reserve | Same, $150 reserve | Never (see above) | Never (owns nothing) | ASAP to 4 houses, $100 reserve, never hotels (supply denial) | ASAP including hotels, $50 reserve |
+| Mortgage / sell houses | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy | N/A (owns nothing) | Cheapest-first, to avoid bankruptcy | Cheapest-first, to avoid bankruptcy |
+| Jail (no card held) | Pay if affordable | Stay early, pay once profitable | Roll for doubles (default) | Same as Buy Good | Leave while no opponent has built up, stay once one does | Pay if affordable |
+| Trade (`RuleSet.trading_enabled`, Phase 7) | Proposes/accepts monopoly-completing swaps (see below) | Same logic as Buy All | Never proposes or accepts | Never proposes or accepts | Same logic as Buy All | Same logic as Buy All |
 
 A held "Get Out of Jail Free" card is always used automatically for every strategy, before `decide_jail_action` is even called — see [game-rules.md](./game-rules.md#jail).
 
@@ -96,4 +100,4 @@ Historical note (true through Phase 6, before Buy Shrewd): none of Buy All/Good/
 
 Anything implementing the `Strategy` trait can be used interchangeably with the built-ins — by the CLI (`--strategy` referencing a registered implementation or a scripted config), by the server for batch dispatch, and by the browser's strategy picker (which lists whatever strategies the running engine build has registered). As of Phase 7, the trait has no default method implementations — a custom strategy must implement all seven hooks, even a trivial one for a hook it doesn't care about (e.g. `decide_build` returning an empty `Vec`, or `decide_trade` returning `None`). Default implementations (e.g. mirroring Buy Good) are a reasonable future addition once a real custom strategy actually needs to override only one or two hooks; nothing built-in does.
 
-Parameterized variants (e.g. "Buy Good with a $300 reserve" instead of $150) are expressed as config on top of a base strategy rather than as wholly new types — see `StrategyConfig` in [data-model.md](./data-model.md#playerconfig).
+Parameterized variants (e.g. "Buy Good with a $300 reserve" instead of $150) are expressed as config on top of a base strategy rather than as wholly new types — see `StrategyConfig` in [data-model.md](./data-model.md#playerconfig). Phase 8's `Configurable` (`crates/engine/src/strategies/configurable.rs`) is this in practice: any `ConfigurableParams` value can be run without a registered name at all via the `cfg:{json}` strategy id (`make_strategy`, `strategies/mod.rs`) — e.g. `cfg:{"valuation":"weighted","jail":"pay_if_affordable","build":{"stop_before_hotel":false},"auction":"valuation_capped","trade":"monopoly_completing","reserve":50}` is exactly what `buy_optimal` hardcodes. `cfg:` ids are deliberately not listed in `STRATEGY_IDS` (they're not a fixed, named set), but `Game::new` resolves them like any other strategy id.

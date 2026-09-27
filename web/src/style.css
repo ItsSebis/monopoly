@@ -3,7 +3,13 @@
    -> component (panel/button/board-specific). Everything downstream of this
    block reads only semantic/component tokens, never a primitive directly,
    so retheming (this file's own dark-mode block) never has to touch a
-   selector outside this section. */
+   selector outside this section. The dark-mode block mostly overrides the
+   semantic tier - sometimes with a fresh literal color rather than a second
+   primitive, where a dark theme's value doesn't correspond to any
+   light-mode primitive worth naming - and, once, a component token directly
+   (--panel-shadow): the same *shape* of shadow needs a genuinely different
+   opacity per theme (a dark shadow reads as a hole on an already-dark
+   surface), not just a different color reference. */
 :root {
   color-scheme: light dark;
 
@@ -35,6 +41,7 @@
   --duration-fast: 120ms;
   --duration-base: 220ms;
   --duration-slow: 420ms;
+  --duration-pulse: 650ms;
 
   /* --- Primitives: neutral scale --- */
   --gray-50: #f7f8fa;
@@ -96,6 +103,7 @@
   --panel-shadow:
     0 1px 2px rgba(20, 23, 30, 0.06),
     0 8px 24px rgba(20, 23, 30, 0.08);
+  --shadow-resting: 0 1px 1px rgba(20, 23, 30, 0.05);
   --control-radius: 8px;
 }
 
@@ -120,6 +128,7 @@
     --panel-shadow:
       0 1px 2px rgba(0, 0, 0, 0.5),
       0 8px 28px rgba(0, 0, 0, 0.45);
+    --shadow-resting: 0 1px 1px rgba(0, 0, 0, 0.4);
 
     /* Bumped lightness/reduced glare relative to the light-mode set, not a
        re-hue - the same 8 hues stay recognizable in both themes. Yellow
@@ -318,7 +327,14 @@ fieldset label {
   justify-content: center;
   font-size: var(--text-xs);
   font-family: var(--font-mono);
-  color: #1a1a1a;
+  /* Fixed, not theme-reactive, unlike every other color rule here:
+     colorFor()'s background (charts/heatmap.ts) stays a fixed light-to-dark
+     blue scale regardless of theme (Canvas/DOM color-mixing aside, Chart.js
+     colors already make the same call - see charts/colors.ts), so the text
+     drawn on it needs to stay fixed dark too, not swap to near-white
+     alongside `--color-text` in dark mode and disappear against a
+     still-light cell. */
+  color: var(--gray-900);
 }
 
 .space {
@@ -326,7 +342,7 @@ fieldset label {
   border: 1px solid var(--color-border);
   border-radius: 3px;
   background: var(--color-surface);
-  box-shadow: 0 1px 1px rgba(20, 23, 30, 0.05);
+  box-shadow: var(--shadow-resting);
   transition:
     background-color var(--duration-base) var(--ease-standard),
     box-shadow var(--duration-base) var(--ease-standard);
@@ -411,16 +427,16 @@ fieldset label {
 }
 
 .space.arrived {
-  animation: arrival-flash 650ms var(--ease-standard);
+  animation: arrival-flash var(--duration-pulse) var(--ease-standard);
 }
 
 @keyframes ownership-flash {
-  0%, 100% { box-shadow: 0 1px 1px rgba(20, 23, 30, 0.05); }
+  0%, 100% { box-shadow: var(--shadow-resting); }
   35% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-success) 70%, transparent); }
 }
 
 .space.ownership-changed {
-  animation: ownership-flash 650ms var(--ease-standard);
+  animation: ownership-flash var(--duration-pulse) var(--ease-standard);
 }
 
 @keyframes houses-pulse {
@@ -430,7 +446,7 @@ fieldset label {
 
 .houses.houses-changed {
   transform-origin: center;
-  animation: houses-pulse 500ms var(--ease-standard);
+  animation: houses-pulse var(--duration-pulse) var(--ease-standard);
 }
 
 .rent-tooltip {
@@ -523,6 +539,19 @@ fieldset label {
   padding: var(--space-3) var(--space-4);
   background: var(--color-surface-sunken);
   border-radius: var(--panel-radius);
+}
+
+/* Visible during an active game (unlike #config-error, which lives inside
+   the config panel - hidden for the whole game) - a session/worker error
+   mid-play needs somewhere the player can actually see it. */
+#session-error {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface));
+  border: 1px solid var(--color-danger);
+  border-radius: var(--control-radius);
+  padding: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-4);
+  font-size: var(--text-sm);
 }
 
 nav#mode-nav {

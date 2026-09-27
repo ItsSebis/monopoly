@@ -183,13 +183,15 @@ export class BoardView {
   /** Re-triggers a one-shot CSS animation class - forces a reflow after
    * removing it so a space that changes twice in quick succession (e.g. two
    * tokens landing there back to back) restarts the animation instead of a
-   * no-op class toggle, then clears it once the animation's own duration
-   * has elapsed. */
+   * no-op class toggle, then clears it once the animation itself actually
+   * ends (`animationend`, not a magic-number `setTimeout` that would drift
+   * out of sync if a CSS duration here ever changed without a matching edit
+   * here). */
   private pulse(el: HTMLElement, className: string): void {
     el.classList.remove(className);
     void el.offsetWidth;
     el.classList.add(className);
-    setTimeout(() => el.classList.remove(className), 700);
+    el.addEventListener("animationend", () => el.classList.remove(className), { once: true });
   }
 }
 

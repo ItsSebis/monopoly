@@ -151,16 +151,35 @@ is a second *driver* of the exact same `PlaybackController`/`BoardView` pair
 `main.ts` already wires up for live play (docs' "[one replay
 pipeline](#one-replay-pipeline-for-every-watch-a-game-need)" decision
 extends naturally to a second source of events/state, not a second
-renderer): `start()` fetches `GET /board` once and calls `POST /sessions`,
-then polls `GET /sessions/{id}?since_seq=` every 400ms (matching Phase 9's
-"CPU turns resolve near-instantly, plain polling is enough" design), feeding
-each poll's `events`/`state` into `PlaybackController.enqueueTurn()` exactly
-like a Worker's per-turn message. Once a poll's `pending` is non-null *and*
-playback has actually drained up to that point (`isDrained()` - never
-showing a decision before the events that led to it have finished
-animating), it fires `onPendingDecision` once; answering it
+renderer): `start()` calls `POST /sessions`, then polls `GET
+/sessions/{id}?since_seq=` every 400ms (matching Phase 9's "CPU turns
+resolve near-instantly, plain polling is enough" design), feeding each
+poll's `events`/`state` into `PlaybackController.enqueueTurn()` exactly like
+a Worker's per-turn message - `main.ts`'s own single `GET /board` fetch
+(used to enrich the board's hover tooltip) is reused as the static data
+`DecisionContext` needs, rather than a second fetch. Once a poll's `pending`
+is non-null *and* playback has actually drained up to that point
+(`isDrained()` - never showing a decision before the events that led to it
+have finished animating), it fires `onPendingDecision` once; answering it
 (`SessionController.answer()`) posts to `POST /sessions/{id}/decisions` and
 folds the response back through the same `applySnapshot()` path.
+
+At most one request (a poll's `GET` or an answer's `POST`) is ever in
+flight at a time, and every request carries a generation number bumped by
+the next one issued - a response that arrives after a newer request has
+already gone out is discarded rather than applied, which is what keeps a
+slow poll from re-showing a decision the player already answered (a race
+that's easy to hit at 400ms intervals otherwise). `enqueueTurn()` itself
+(`controls/playback.ts`) never renders a snapshot's state ahead of
+animations still queued from an earlier one, even for a poll that reports
+zero new events (the common case between two CPU turns) - only once
+playback actually catches up to "now" does the freshest known state apply.
+A 404 (the session was reaped after 30 minutes idle, or deleted out from
+under the poll) is treated as terminal - polling stops, playback freezes,
+and the error surfaces in the visible `#session-error` banner next to the
+turn indicator (not `#config-error`, which lives in the hidden config panel
+for the whole game). A graceful `game_over` only stops polling, leaving
+playback to finish draining to the end exactly as it would mid-game.
 
 **The decision prompt** (`controls/decisionPrompt.ts`) is one reusable shell
 docked at the top of the side panel (not a center modal - the board stays

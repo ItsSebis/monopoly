@@ -25,6 +25,15 @@ use crate::strategy::{BuildAction, JailAction, MortgageAction, Strategy, TradeOf
 /// them — the one source of truth for anything that needs to list them (e.g.
 /// the browser's strategy dropdown in Phase 5), instead of a hand-maintained
 /// duplicate.
+///
+/// Mirrored as a literal TS copy in `web/src/controls/configForm.ts`'s
+/// `STATIC_STRATEGY_IDS` (Phase 10 - the config form's CPU-strategy
+/// dropdowns need this list without waiting on a Worker's wasm init just to
+/// ask it). `configForm.test.ts` parses this exact constant out of this
+/// file's source text to catch the two drifting apart (matching on this
+/// constant's own declaration line below, one quoted id per array entry) -
+/// keep that shape if you touch it, and see that test before rewording this
+/// comment, since it also scans this doc comment block as plain text.
 pub const STRATEGY_IDS: &[&str] = &[
     "buy_all",
     "buy_good",

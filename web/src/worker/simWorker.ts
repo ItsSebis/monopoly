@@ -9,6 +9,7 @@ import init, {
   safety_max_turns,
   strategy_ids,
 } from "../wasm/monopoly_engine_wasm.js";
+import { errorMessage } from "../errorMessage";
 import type { EventEnvelope, GameConfig, GameState } from "../types";
 
 export type WorkerRequest =
@@ -35,7 +36,7 @@ function runGame(config: GameConfig, seed: bigint): void {
   try {
     game = new WasmGame(JSON.stringify(config), seed);
   } catch (err) {
-    post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    post({ type: "error", message: errorMessage(err) });
     return;
   }
 
@@ -72,22 +73,42 @@ function buildRecord(config: GameConfig, seed: bigint): void {
     const recordJson = build_single_run_record(JSON.stringify(config), seed);
     post({ type: "record", recordJson });
   } catch (err) {
-    post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    post({ type: "error", message: errorMessage(err) });
   }
 }
 
-async function main(): Promise<void> {
-  await init();
-  post({ type: "ready", strategyIds: JSON.parse(strategy_ids()) as string[] });
+function handle(request: WorkerRequest): void {
+  if (request.type === "start") runGame(request.config, request.seed);
+  else if (request.type === "buildRecord") buildRecord(request.config, request.seed);
+}
 
+async function main(): Promise<void> {
+  // The message listener is attached before `await init()` (rather than
+  // after, as an earlier version of this file did) and buffers anything
+  // that arrives in the meantime - the config form no longer waits for
+  // `ready` before enabling Start (`configForm.ts`'s constructor), so a
+  // "start" posted while wasm is still compiling is a real, reachable case
+  // now, not just a theoretical one. Whether the browser's own Worker
+  // message port would have queued an unhandled message anyway is left
+  // deliberately untested here; buffering explicitly removes the need to
+  // rely on that.
+  let ready = false;
+  const buffered: WorkerRequest[] = [];
   self.addEventListener("message", (ev: MessageEvent) => {
     const request = ev.data as WorkerRequest;
-    if (request.type === "start") runGame(request.config, request.seed);
-    else if (request.type === "buildRecord") buildRecord(request.config, request.seed);
+    if (ready) handle(request);
+    else buffered.push(request);
   });
+
+  await init();
+  ready = true;
+  post({ type: "ready", strategyIds: JSON.parse(strategy_ids()) as string[] });
+  for (const request of buffered) handle(request);
 }
 
 // An `init()` failure (e.g. the wasm binary fetch failing) would otherwise be
-// an unhandled rejection the main thread never learns about, leaving the
-// config form stuck on "loading engine..." forever with no visible error.
-main().catch((err) => post({ type: "error", message: err instanceof Error ? err.message : String(err) }));
+// an unhandled rejection the main thread never learns about - now surfaced
+// via `configForm.showError`/the session-error banner (`main.ts`) exactly
+// like any other worker error, rather than leaving the form looking usable
+// but silently non-functional.
+main().catch((err) => post({ type: "error", message: errorMessage(err) }));

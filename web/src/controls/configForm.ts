@@ -4,15 +4,19 @@
 // UI-specific intermediate format.
 import type { GameConfig, IncomeTaxMode, PlayerConfig, RuleSet } from "../types";
 
-/** Mirrors `engine::strategies::STRATEGY_IDS` (`crates/engine/src/strategies/mod.rs`)
- * so the interactive mode's CPU-strategy dropdowns don't have to wait on a
- * Worker's wasm init just to learn a static list - see setStrategyIds()'s own
- * comment for why this is now also the form's *first* answer for every
- * mode, not just interactive's. Kept as a literal duplicate rather than a
- * build-time codegen step, matching this repo's existing small-surface bias;
- * `strategies/mod.rs`'s own exhaustiveness test (`make_strategy` recognizes
- * every id in `STRATEGY_IDS`) is what would catch the two drifting apart. */
-const STRATEGY_IDS_FALLBACK = ["buy_all", "buy_good", "buy_bad", "buy_none", "buy_shrewd", "buy_optimal"];
+/** Mirrors `engine::strategies::STRATEGY_IDS` (`crates/engine/src/strategies/mod.rs`,
+ * which carries a comment pointing back here) so the form doesn't have to
+ * wait on a Worker's wasm init just to learn a static list - see
+ * `setStrategyIds()`'s own comment for why this is the form's *first* answer
+ * for every mode now, not just interactive's. Kept as a literal duplicate
+ * rather than a build-time codegen step, matching this repo's existing
+ * small-surface bias; drift from the Rust list is caught by
+ * `configForm.test.ts`'s `STATIC_STRATEGY_IDS` test (which reads and
+ * regex-parses `strategies/mod.rs` directly) and, as a runtime backstop,
+ * `setStrategyIds()`'s own mismatch warning below. */
+export const STATIC_STRATEGY_IDS = ["buy_all", "buy_good", "buy_bad", "buy_none", "buy_shrewd", "buy_optimal"];
+
+export type RunMode = "live" | "batch" | "interactive";
 
 /** `seed` is a `bigint`, matching every other seed in the app (see
  * types.ts's `SingleRunRecord.seed`) so `startReplay()` has one seed type
@@ -87,7 +91,7 @@ export interface ConfigFormHandlers {
 }
 
 export class ConfigForm {
-  private strategyIds: string[] = STRATEGY_IDS_FALLBACK;
+  private strategyIds: string[] = STATIC_STRATEGY_IDS;
   private readonly playerRowsEl: HTMLElement;
   private readonly errorEl: HTMLElement;
   private readonly startButton: HTMLButtonElement;
@@ -114,12 +118,13 @@ export class ConfigForm {
       this.submit();
     });
 
-    // Every registered strategy id is known statically (`STRATEGY_IDS_FALLBACK`
+    // Every registered strategy id is known statically (`STATIC_STRATEGY_IDS`
     // above) - the form doesn't actually need a Worker's wasm init to be
     // usable, only "live" mode's Start does (it drives that same Worker).
-    // Seeding 2 default rows and enabling controls immediately means batch
-    // and interactive mode never wait on wasm at all; `setStrategyIds()`
-    // (below) just reconciles the list once the real one arrives.
+    // Seeding 2 default rows and enabling controls immediately means every
+    // mode, live included, is interactable right away; `setStrategyIds()`
+    // (below) just reconciles the list once the Worker's `ready` message
+    // actually arrives, which no longer gates anything.
     this.addPlayerRow();
     this.addPlayerRow();
     this.updateModeFields();
@@ -133,12 +138,21 @@ export class ConfigForm {
   }
 
   /** Called once the Worker reports the engine's registered strategy ids -
-   * reconciles `STRATEGY_IDS_FALLBACK`'s guess with the real list for any
+   * reconciles `STATIC_STRATEGY_IDS`'s copy with the real list for any
    * *future* player row (existing rows/selections are left alone). Since the
    * two are meant to be kept identical, this is normally a no-op in
    * practice; it's not load-bearing for the form's usability the way it was
-   * before (see the constructor). */
+   * before (see the constructor). A mismatch here means the Rust and TS
+   * lists have drifted apart *and* `configForm.test.ts`'s own drift test
+   * somehow didn't catch it (e.g. it wasn't run) - surfaced loudly enough to
+   * notice without failing a real user's session over it. */
   setStrategyIds(ids: string[]): void {
+    if (ids.length !== this.strategyIds.length || ids.some((id, i) => id !== this.strategyIds[i])) {
+      console.warn(
+        "STATIC_STRATEGY_IDS (configForm.ts) has drifted from the Worker's real strategy ids.",
+        { static: this.strategyIds, real: ids },
+      );
+    }
     this.strategyIds = ids;
   }
 
@@ -149,14 +163,14 @@ export class ConfigForm {
   /** Resets the player-rows editor to a fresh default pair - called when
    * "New game" tears down and restarts the live Worker, so the next game
    * doesn't inherit the just-finished one's roster. */
-  awaitReady(): void {
+  resetPlayerRows(): void {
     this.playerRowsEl.innerHTML = "";
     this.rowCount = 0;
     this.addPlayerRow();
     this.addPlayerRow();
   }
 
-  private mode(): "live" | "batch" | "interactive" {
+  private mode(): RunMode {
     const checked = this.formEl.querySelector<HTMLInputElement>('input[name="run_mode"]:checked');
     if (checked?.value === "batch") return "batch";
     if (checked?.value === "interactive") return "interactive";
@@ -165,10 +179,11 @@ export class ConfigForm {
 
   private updateModeFields(): void {
     const mode = this.mode();
+    const startLabel: Record<RunMode, string> = { live: "Start", batch: "Run batch", interactive: "Play" };
     this.formEl.dataset.mode = mode;
     this.seedField.hidden = mode !== "live";
     this.gameCountField.hidden = mode !== "batch";
-    this.startButton.textContent = mode === "batch" ? "Run batch" : mode === "interactive" ? "Play" : "Start";
+    this.startButton.textContent = startLabel[mode];
   }
 
   private addPlayerRow(): void {

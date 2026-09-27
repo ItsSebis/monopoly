@@ -316,11 +316,16 @@ export interface GameOver {
   turns: number;
 }
 
+// `seed` is deliberately omitted below even though the server accepts one -
+// nothing in this app ever sets it (an interactive game always gets a fresh
+// random seed), and every other seed in this file is a `bigint` (see
+// bigJson.ts) since it routinely exceeds `Number.MAX_SAFE_INTEGER`; adding
+// an unused `seed?: number` field here would both go unused and violate
+// that convention the moment something did set it.
 export interface CreateSessionRequest {
   rules?: RuleSet;
   players: PlayerConfig[];
   human_seat: number;
-  seed?: number;
 }
 
 export interface SessionSnapshot {

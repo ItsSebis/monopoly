@@ -13,6 +13,7 @@ import type {
   GameState,
   MortgageAction,
   PendingDecision,
+  PropertyState,
   RuleSet,
   TradeOffer,
 } from "../types";
@@ -25,6 +26,14 @@ export interface DecisionContext {
   playerNames: string[];
   ruleSet: RuleSet | null;
 }
+
+/** `ctx` narrowed to a specific `PendingDecision` variant - what each
+ * per-kind renderer actually receives (via `show()`'s `switch`), so a
+ * renderer reads `ctx.pending`'s kind-specific fields directly instead of
+ * re-checking `ctx.pending.kind` itself. */
+type NarrowedContext<K extends PendingDecision["kind"]> = Omit<DecisionContext, "pending"> & {
+  pending: Extract<PendingDecision, { kind: K }>;
+};
 
 type Submit = (answer: DecisionAnswer) => void;
 
@@ -51,18 +60,29 @@ const TEMPERATURE: Record<PendingDecision["kind"], "info" | "warning"> = {
   TradeResponse: "info",
 };
 
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
+function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className?: string,
+  text?: string,
+): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
   return node;
 }
 
 function button(label: string, variant: "primary" | "secondary" | "stepper", onClick: () => void): HTMLButtonElement {
-  const b = el("button", `decision-button decision-button--${variant}`);
+  const b = el("button", `decision-button decision-button--${variant}`, label);
   b.type = "button";
-  b.textContent = label;
   b.addEventListener("click", onClick);
   return b;
+}
+
+/** The Confirm/Skip-style button row every renderer ends with. */
+function actionRow(...buttons: HTMLButtonElement[]): HTMLElement {
+  const row = el("div", "decision-actions");
+  row.append(...buttons);
+  return row;
 }
 
 function labeled(text: string, control: HTMLElement): HTMLLabelElement {
@@ -87,8 +107,33 @@ function numberInput(min: number, max: number | undefined): HTMLInputElement {
   return input;
 }
 
-function renderPurchase(body: HTMLElement, ctx: DecisionContext, submit: Submit): void {
-  if (ctx.pending.kind !== "Purchase") return;
+type IndexedProperty = PropertyState & { index: number };
+
+/** Every space `owner` owns, indexed - the shared base for `Build`'s and
+ * `Mortgage`'s own-property lists and `tradableProperties()` below, rather
+ * than three near-identical `state.properties.map(...).filter(...)` chains. */
+function ownedProperties(state: GameState, owner: number): IndexedProperty[] {
+  return state.properties.map((p, index) => ({ ...p, index })).filter((p) => p.owner === owner);
+}
+
+/** Only unmortgaged, house-free properties are ever tradable
+ * (docs/game-rules.md#trading) - pre-filtered here so every checkbox in the
+ * trade picker is a legal candidate, not a UI-side re-implementation of that
+ * rule (the engine still validates the submitted offer regardless). */
+function tradableProperties(state: GameState, owner: number): IndexedProperty[] {
+  return ownedProperties(state, owner).filter((p) => !p.mortgaged && p.houses === 0);
+}
+
+/** The `<div class="decision-trade-column">` + heading shell shared by
+ * `TradeProposal`'s interactive (checkbox) columns and `TradeResponse`'s
+ * read-only ones - only the body differs, appended by each caller. */
+function tradeColumnShell(title: string): HTMLElement {
+  const col = el("div", "decision-trade-column");
+  col.appendChild(el("h4", undefined, title));
+  return col;
+}
+
+function renderPurchase(body: HTMLElement, ctx: NarrowedContext<"Purchase">, submit: Submit): void {
   const { offer } = ctx.pending;
   const space = BOARD_LAYOUT[offer.space];
   const dto = ctx.boardData[offer.space];
@@ -96,14 +141,9 @@ function renderPurchase(body: HTMLElement, ctx: DecisionContext, submit: Submit)
   const header = el("div", "decision-purchase-header");
   const swatch = groupSwatch(space?.colorGroup ?? null);
   if (swatch) header.appendChild(swatch);
-  const title = el("strong");
-  title.textContent = spaceName(offer.space);
-  header.appendChild(title);
+  header.appendChild(el("strong", undefined, spaceName(offer.space)));
   body.appendChild(header);
-
-  const price = el("p", "decision-money");
-  price.textContent = `Price: $${offer.price}`;
-  body.appendChild(price);
+  body.appendChild(el("p", "decision-money", `Price: $${offer.price}`));
 
   if (dto?.base_rent !== undefined && dto.house_rent) {
     const table = el("table", "decision-rent-table");
@@ -117,65 +157,57 @@ function renderPurchase(body: HTMLElement, ctx: DecisionContext, submit: Submit)
     ];
     for (const [label, rent] of rows) {
       const tr = el("tr");
-      const th = el("td");
-      th.textContent = label;
-      const td = el("td");
-      td.className = "decision-money";
-      td.textContent = `$${rent}`;
-      tr.append(th, td);
+      const labelCell = el("th", undefined, label);
+      labelCell.scope = "row";
+      tr.append(labelCell, el("td", "decision-money", `$${rent}`));
       table.appendChild(tr);
     }
     body.appendChild(table);
   }
 
-  const actions = el("div", "decision-actions");
-  actions.append(
-    button("Buy", "primary", () => submit({ kind: "Purchase", buy: true })),
-    button("Pass", "secondary", () => submit({ kind: "Purchase", buy: false })),
+  body.appendChild(
+    actionRow(
+      button("Buy", "primary", () => submit({ kind: "Purchase", buy: true })),
+      button("Pass", "secondary", () => submit({ kind: "Purchase", buy: false })),
+    ),
   );
-  body.appendChild(actions);
 }
 
-function renderJailAction(body: HTMLElement, ctx: DecisionContext, submit: Submit): void {
-  if (ctx.pending.kind !== "JailAction") return;
+function renderJailAction(body: HTMLElement, ctx: NarrowedContext<"JailAction">, submit: Submit): void {
   const player = ctx.state.players[ctx.humanSeat];
-  const info = el("p");
   const fineNote = ctx.ruleSet ? ` The fine is $${ctx.ruleSet.jail_fine}.` : "";
-  info.textContent = `Turn ${player.jail_turns + 1} in jail. Your cash: $${player.cash}.${fineNote}`;
-  body.appendChild(info);
+  body.appendChild(el("p", undefined, `Turn ${player.jail_turns + 1} in jail. Your cash: $${player.cash}.${fineNote}`));
 
-  const actions = el("div", "decision-actions");
-  actions.append(
-    button("Pay fine", "primary", () => submit({ kind: "JailAction", action: "PayFine" })),
-    button("Roll for doubles", "secondary", () => submit({ kind: "JailAction", action: "RollForDoubles" })),
+  body.appendChild(
+    actionRow(
+      button("Pay fine", "primary", () => submit({ kind: "JailAction", action: "PayFine" })),
+      button("Roll for doubles", "secondary", () => submit({ kind: "JailAction", action: "RollForDoubles" })),
+    ),
   );
-  body.appendChild(actions);
 }
 
-function renderBuild(body: HTMLElement, ctx: DecisionContext, submit: Submit): void {
-  if (ctx.pending.kind !== "Build") return;
-  const own = ctx.state.properties
-    .map((p, index) => ({ ...p, index }))
-    .filter((p) => p.owner === ctx.humanSeat && !p.mortgaged);
+function renderBuild(body: HTMLElement, ctx: NarrowedContext<"Build">, submit: Submit): void {
+  const own = ownedProperties(ctx.state, ctx.humanSeat).filter((p) => !p.mortgaged);
 
   const staged = new Map<number, number>();
   const grid = el("div", "decision-build-grid");
   if (own.length === 0) {
-    const none = el("p");
-    none.textContent = "You have no eligible properties.";
-    body.appendChild(none);
+    body.appendChild(el("p", undefined, "You have no eligible properties."));
   }
   for (const prop of own) {
     const space = BOARD_LAYOUT[prop.index];
     const row = el("div", "decision-build-row");
     const swatch = groupSwatch(space?.colorGroup ?? null);
     if (swatch) row.appendChild(swatch);
-    const label = el("span", "decision-build-label");
-    label.textContent = `${spaceName(prop.index)} (${prop.houses === 5 ? "hotel" : `${prop.houses} houses`})`;
-    row.appendChild(label);
+    row.appendChild(
+      el(
+        "span",
+        "decision-build-label",
+        `${spaceName(prop.index)} (${prop.houses === 5 ? "hotel" : `${prop.houses} houses`})`,
+      ),
+    );
 
-    const counter = el("span", "decision-stepper-count");
-    counter.textContent = "0";
+    const counter = el("span", "decision-stepper-count", "0");
     const stage = (delta: number) => {
       const next = (staged.get(prop.index) ?? 0) + delta;
       staged.set(prop.index, next);
@@ -186,31 +218,28 @@ function renderBuild(body: HTMLElement, ctx: DecisionContext, submit: Submit): v
   }
   body.appendChild(grid);
 
-  const actions = el("div", "decision-actions");
-  actions.append(
-    button("Confirm", "primary", () => {
-      const buildActions: BuildAction[] = [];
-      for (const [space, net] of staged) {
-        const count = Math.abs(net);
-        for (let i = 0; i < count; i++) {
-          buildActions.push(net > 0 ? { Build: space } : { SellHouse: space });
+  body.appendChild(
+    actionRow(
+      button("Confirm", "primary", () => {
+        const buildActions: BuildAction[] = [];
+        for (const [space, net] of staged) {
+          const count = Math.abs(net);
+          for (let i = 0; i < count; i++) {
+            buildActions.push(net > 0 ? { Build: space } : { SellHouse: space });
+          }
         }
-      }
-      submit({ kind: "Build", actions: buildActions });
-    }),
-    button("Skip", "secondary", () => submit({ kind: "Build", actions: [] })),
+        submit({ kind: "Build", actions: buildActions });
+      }),
+      button("Skip", "secondary", () => submit({ kind: "Build", actions: [] })),
+    ),
   );
-  body.appendChild(actions);
 }
 
-function renderMortgage(body: HTMLElement, ctx: DecisionContext, submit: Submit): void {
-  if (ctx.pending.kind !== "Mortgage") return;
+function renderMortgage(body: HTMLElement, ctx: NarrowedContext<"Mortgage">, submit: Submit): void {
   const { shortfall } = ctx.pending;
-  const own = ctx.state.properties.map((p, index) => ({ ...p, index })).filter((p) => p.owner === ctx.humanSeat);
+  const own = ownedProperties(ctx.state, ctx.humanSeat);
 
-  const header = el("p", "decision-shortfall");
-  header.textContent = `You need to raise $${shortfall}.`;
-  body.appendChild(header);
+  body.appendChild(el("p", "decision-shortfall", `You need to raise $${shortfall}.`));
 
   const staged: MortgageAction[] = [];
   let raised = 0;
@@ -226,9 +255,7 @@ function renderMortgage(body: HTMLElement, ctx: DecisionContext, submit: Submit)
   for (const prop of own) {
     const dto = ctx.boardData[prop.index];
     const row = el("div", "decision-mortgage-row");
-    const label = el("span");
-    label.textContent = spaceName(prop.index);
-    row.appendChild(label);
+    row.appendChild(el("span", undefined, spaceName(prop.index)));
 
     if (prop.houses > 0) {
       const perHouse = Math.floor((dto?.house_cost ?? 0) / 2);
@@ -254,60 +281,37 @@ function renderMortgage(body: HTMLElement, ctx: DecisionContext, submit: Submit)
     }
     list.appendChild(row);
   }
-  body.appendChild(list);
-  body.appendChild(totalEl);
-
-  const actions = el("div", "decision-actions");
-  actions.append(button("Confirm", "primary", () => submit({ kind: "Mortgage", actions: staged })));
-  body.appendChild(actions);
+  body.append(list, totalEl, actionRow(button("Confirm", "primary", () => submit({ kind: "Mortgage", actions: staged }))));
 }
 
-function renderAuctionBid(body: HTMLElement, ctx: DecisionContext, submit: Submit): void {
-  if (ctx.pending.kind !== "AuctionBid") return;
+function renderAuctionBid(body: HTMLElement, ctx: NarrowedContext<"AuctionBid">, submit: Submit): void {
   const { space } = ctx.pending;
   const cash = ctx.state.players[ctx.humanSeat].cash;
 
-  const info = el("p");
-  info.textContent = `${spaceName(space)} is up for auction. Your cash: $${cash}.`;
-  body.appendChild(info);
+  body.appendChild(el("p", undefined, `${spaceName(space)} is up for auction. Your cash: $${cash}.`));
 
   const input = numberInput(0, Math.max(0, cash));
   body.appendChild(labeled("Your bid", input));
 
-  const actions = el("div", "decision-actions");
-  actions.append(
-    button("Submit bid", "primary", () => {
-      const amount = Math.max(0, Math.min(cash, Math.floor(Number(input.value) || 0)));
-      submit({ kind: "AuctionBid", amount });
-    }),
-    button("Abstain", "secondary", () => submit({ kind: "AuctionBid", amount: null })),
+  body.appendChild(
+    actionRow(
+      button("Submit bid", "primary", () => {
+        const amount = Math.max(0, Math.min(cash, Math.floor(Number(input.value) || 0)));
+        submit({ kind: "AuctionBid", amount });
+      }),
+      button("Abstain", "secondary", () => submit({ kind: "AuctionBid", amount: null })),
+    ),
   );
-  body.appendChild(actions);
 }
 
-/** Only unmortgaged, house-free properties are ever tradable
- * (docs/game-rules.md#trading) - pre-filtered here so every checkbox in the
- * picker is a legal candidate, not a UI-side re-implementation of that rule
- * (the engine still validates the submitted offer regardless). */
-function tradableProperties(state: GameState, owner: number): { index: number }[] {
-  return state.properties
-    .map((p, index) => ({ ...p, index }))
-    .filter((p) => p.owner === owner && !p.mortgaged && p.houses === 0);
-}
-
-function renderTradeProposal(body: HTMLElement, ctx: DecisionContext, submit: Submit): void {
-  if (ctx.pending.kind !== "TradeProposal") return;
+function renderTradeProposal(body: HTMLElement, ctx: NarrowedContext<"TradeProposal">, submit: Submit): void {
   const others = ctx.state.players
     .map((p, index) => ({ ...p, index }))
     .filter((p) => p.index !== ctx.humanSeat && !p.bankrupt);
 
-  const actions = el("div", "decision-actions");
   if (others.length === 0) {
-    const none = el("p");
-    none.textContent = "No other active players to trade with.";
-    body.appendChild(none);
-    actions.append(button("Skip", "secondary", () => submit({ kind: "TradeProposal", offer: null })));
-    body.appendChild(actions);
+    body.appendChild(el("p", undefined, "No other active players to trade with."));
+    body.appendChild(actionRow(button("Skip", "secondary", () => submit({ kind: "TradeProposal", offer: null }))));
     return;
   }
 
@@ -317,9 +321,8 @@ function renderTradeProposal(body: HTMLElement, ctx: DecisionContext, submit: Su
 
   const picker = el("select", "decision-trade-picker");
   for (const other of others) {
-    const option = el("option");
+    const option = el("option", undefined, ctx.playerNames[other.index] ?? `Player ${other.index}`);
     option.value = String(other.index);
-    option.textContent = ctx.playerNames[other.index] ?? `Player ${other.index}`;
     picker.appendChild(option);
   }
   body.appendChild(labeled("Trade with", picker));
@@ -328,15 +331,10 @@ function renderTradeProposal(body: HTMLElement, ctx: DecisionContext, submit: Su
   body.appendChild(columns);
 
   function buildColumn(title: string, owner: number, selected: Set<number>): HTMLElement {
-    const col = el("div", "decision-trade-column");
-    const heading = el("h4");
-    heading.textContent = title;
-    col.appendChild(heading);
+    const col = tradeColumnShell(title);
     const props = tradableProperties(ctx.state, owner);
     if (props.length === 0) {
-      const p = el("p");
-      p.textContent = "Nothing tradable.";
-      col.appendChild(p);
+      col.appendChild(el("p", undefined, "Nothing tradable."));
     }
     for (const prop of props) {
       const row = el("label", "decision-trade-item");
@@ -373,58 +371,45 @@ function renderTradeProposal(body: HTMLElement, ctx: DecisionContext, submit: Su
   cashRow.append(labeled("Cash you give", offeredCashInput), labeled("Cash you want", requestedCashInput));
   body.appendChild(cashRow);
 
-  actions.append(
-    button("Propose", "primary", () => {
-      const offer: TradeOffer = {
-        to: counterparty,
-        offered_properties: [...offeredProps],
-        offered_cash: Math.max(0, Math.floor(Number(offeredCashInput.value) || 0)),
-        requested_properties: [...requestedProps],
-        requested_cash: Math.max(0, Math.floor(Number(requestedCashInput.value) || 0)),
-      };
-      submit({ kind: "TradeProposal", offer });
-    }),
-    button("Skip", "secondary", () => submit({ kind: "TradeProposal", offer: null })),
+  body.appendChild(
+    actionRow(
+      button("Propose", "primary", () => {
+        const offer: TradeOffer = {
+          to: counterparty,
+          offered_properties: [...offeredProps],
+          offered_cash: Math.max(0, Math.floor(Number(offeredCashInput.value) || 0)),
+          requested_properties: [...requestedProps],
+          requested_cash: Math.max(0, Math.floor(Number(requestedCashInput.value) || 0)),
+        };
+        submit({ kind: "TradeProposal", offer });
+      }),
+      button("Skip", "secondary", () => submit({ kind: "TradeProposal", offer: null })),
+    ),
   );
-  body.appendChild(actions);
 }
 
 function readonlyTradeColumn(title: string, properties: number[], cash: number): HTMLElement {
-  const col = el("div", "decision-trade-column");
-  const heading = el("h4");
-  heading.textContent = title;
-  col.appendChild(heading);
+  const col = tradeColumnShell(title);
   const list = el("ul", "decision-trade-list");
   if (properties.length === 0) {
-    const li = el("li");
-    li.textContent = "Nothing";
-    list.appendChild(li);
+    list.appendChild(el("li", undefined, "Nothing"));
   }
   for (const space of properties) {
-    const li = el("li");
-    li.textContent = spaceName(space);
-    list.appendChild(li);
+    list.appendChild(el("li", undefined, spaceName(space)));
   }
   col.appendChild(list);
-  if (cash > 0) {
-    const p = el("p", "decision-money");
-    p.textContent = `+ $${cash}`;
-    col.appendChild(p);
-  }
+  if (cash > 0) col.appendChild(el("p", "decision-money", `+ $${cash}`));
   return col;
 }
 
-function renderTradeResponse(body: HTMLElement, ctx: DecisionContext, submit: Submit): void {
-  if (ctx.pending.kind !== "TradeResponse") return;
+function renderTradeResponse(body: HTMLElement, ctx: NarrowedContext<"TradeResponse">, submit: Submit): void {
   const { offer } = ctx.pending;
   // `TradeOffer` carries no "from" field - only the current turn's own
   // player ever proposes a trade (`Strategy::decide_trade`'s doc comment),
   // so `state.current_player` is always the proposer here.
   const proposer = ctx.playerNames[ctx.state.current_player] ?? `Player ${ctx.state.current_player}`;
 
-  const header = el("p");
-  header.textContent = `${proposer} proposes:`;
-  body.appendChild(header);
+  body.appendChild(el("p", undefined, `${proposer} proposes:`));
 
   const columns = el("div", "decision-trade-columns");
   columns.append(
@@ -433,24 +418,13 @@ function renderTradeResponse(body: HTMLElement, ctx: DecisionContext, submit: Su
   );
   body.appendChild(columns);
 
-  const actions = el("div", "decision-actions");
-  actions.append(
-    button("Accept", "primary", () => submit({ kind: "TradeResponse", accept: true })),
-    button("Decline", "secondary", () => submit({ kind: "TradeResponse", accept: false })),
+  body.appendChild(
+    actionRow(
+      button("Accept", "primary", () => submit({ kind: "TradeResponse", accept: true })),
+      button("Decline", "secondary", () => submit({ kind: "TradeResponse", accept: false })),
+    ),
   );
-  body.appendChild(actions);
 }
-
-const RENDERERS: Record<PendingDecision["kind"], (body: HTMLElement, ctx: DecisionContext, submit: Submit) => void> =
-  {
-    Purchase: renderPurchase,
-    JailAction: renderJailAction,
-    Build: renderBuild,
-    Mortgage: renderMortgage,
-    AuctionBid: renderAuctionBid,
-    TradeProposal: renderTradeProposal,
-    TradeResponse: renderTradeResponse,
-  };
 
 export class DecisionPrompt {
   constructor(
@@ -467,10 +441,7 @@ export class DecisionPrompt {
     // actually restarts it instead of a no-op class toggle.
     void this.container.offsetWidth;
     this.container.classList.add("decision-prompt--enter");
-
-    const heading = el("h3", "decision-heading");
-    heading.textContent = TITLES[ctx.pending.kind];
-    this.container.appendChild(heading);
+    this.container.appendChild(el("h3", "decision-heading", TITLES[ctx.pending.kind]));
 
     const body = el("div", "decision-body");
     this.container.appendChild(body);
@@ -479,7 +450,37 @@ export class DecisionPrompt {
       this.hide();
       this.onAnswer(answer);
     };
-    RENDERERS[ctx.pending.kind](body, ctx, submit);
+
+    // Dispatches on `ctx.pending.kind` via a real `switch` (rather than a
+    // lookup table indexed by that same kind) so each branch gets a
+    // genuinely narrowed `ctx.pending` from TS's own discriminated-union
+    // control-flow analysis - the `{ ...ctx, pending: ctx.pending }` copies
+    // below are what let that narrowed type flow into each renderer's
+    // parameter, instead of every renderer re-deriving it with its own
+    // `if (ctx.pending.kind !== "X") return;` runtime guard.
+    switch (ctx.pending.kind) {
+      case "Purchase":
+        renderPurchase(body, { ...ctx, pending: ctx.pending }, submit);
+        break;
+      case "JailAction":
+        renderJailAction(body, { ...ctx, pending: ctx.pending }, submit);
+        break;
+      case "Build":
+        renderBuild(body, { ...ctx, pending: ctx.pending }, submit);
+        break;
+      case "Mortgage":
+        renderMortgage(body, { ...ctx, pending: ctx.pending }, submit);
+        break;
+      case "AuctionBid":
+        renderAuctionBid(body, { ...ctx, pending: ctx.pending }, submit);
+        break;
+      case "TradeProposal":
+        renderTradeProposal(body, { ...ctx, pending: ctx.pending }, submit);
+        break;
+      case "TradeResponse":
+        renderTradeResponse(body, { ...ctx, pending: ctx.pending }, submit);
+        break;
+    }
   }
 
   hide(): void {
